@@ -26,6 +26,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from nsetools import Nse
 import nsepy
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Setup logging
 logging.basicConfig(
@@ -610,12 +611,188 @@ class StockDataManager:
         return opportunities
 
 
+# Define the HTTP Handler for our web server
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Main page
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            # Basic HTML response showing the bot is running
+            response = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>NSE Trading Bot</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    h1 { color: #2c3e50; }
+                    .status { padding: 10px; background-color: #e8f5e9; border-radius: 5px; }
+                    .info { color: #1b5e20; }
+                </style>
+            </head>
+            <body>
+                <h1>NSE Trading Bot</h1>
+                <div class="status">
+                    <p class="info">✅ Trading bot is running and analyzing NSE stocks.</p>
+                </div>
+                <p>The bot is analyzing Nifty 50 stocks and generating trading signals.</p>
+                <p>Last updated: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
+                <p><a href="/signals">View latest trading signals</a></p>
+            </body>
+            </html>
+            """
+            self.wfile.write(response.encode())
+            
+        # Signals endpoint
+        elif self.path == '/signals':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            # Try to read the latest trading signals
+            try:
+                with open('trading_signals.json', 'r') as f:
+                    signals = json.load(f)
+                    
+                # Create HTML for the signals
+                signals_html = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Trading Signals</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 20px; }
+                        h1, h2 { color: #2c3e50; }
+                        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+                        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                        th { background-color: #f2f2f2; }
+                        tr:nth-child(even) { background-color: #f9f9f9; }
+                        .buy { color: green; }
+                        .sell { color: red; }
+                        .no-data { font-style: italic; color: #777; }
+                    </style>
+                </head>
+                <body>
+                    <h1>Trading Signals</h1>
+                    <p>Last updated: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
+                    
+                    <h2 class="buy">Buy Recommendations</h2>
+                """
+                
+                # Add buy recommendations table
+                if signals['buy']:
+                    signals_html += """
+                    <table>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Current Price (₹)</th>
+                            <th>Target Price (₹)</th>
+                            <th>Potential Gain (%)</th>
+                            <th>RSI</th>
+                            <th>Recent Change (%)</th>
+                            <th>Reason</th>
+                        </tr>
+                    """
+                    
+                    for rec in signals['buy']:
+                        signals_html += f"""
+                        <tr>
+                            <td>{rec['symbol']}</td>
+                            <td>{rec['current_price']}</td>
+                            <td>{rec['target_price']}</td>
+                            <td class="buy">+{rec['potential_gain_pct']}%</td>
+                            <td>{rec['rsi']:.2f}</td>
+                            <td>{rec['price_change']:.2f}%</td>
+                            <td>{rec['reason']}</td>
+                        </tr>
+                        """
+                    
+                    signals_html += "</table>"
+                else:
+                    signals_html += '<p class="no-data">No buy recommendations at this time.</p>'
+                
+                # Add sell recommendations table
+                signals_html += '<h2 class="sell">Sell Recommendations</h2>'
+                
+                if signals['sell']:
+                    signals_html += """
+                    <table>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Current Price (₹)</th>
+                            <th>Target Price (₹)</th>
+                            <th>Potential Loss (%)</th>
+                            <th>RSI</th>
+                            <th>Recent Change (%)</th>
+                            <th>Reason</th>
+                        </tr>
+                    """
+                    
+                    for rec in signals['sell']:
+                        signals_html += f"""
+                        <tr>
+                            <td>{rec['symbol']}</td>
+                            <td>{rec['current_price']}</td>
+                            <td>{rec['target_price']}</td>
+                            <td class="sell">-{rec['potential_loss_pct']}%</td>
+                            <td>{rec['rsi']:.2f}</td>
+                            <td>{rec['price_change']:.2f}%</td>
+                            <td>{rec['reason']}</td>
+                        </tr>
+                        """
+                    
+                    signals_html += "</table>"
+                else:
+                    signals_html += '<p class="no-data">No sell recommendations at this time.</p>'
+                
+                # Complete the HTML
+                signals_html += """
+                    <p><a href="/">Back to home</a></p>
+                </body>
+                </html>
+                """
+                
+                self.wfile.write(signals_html.encode())
+                
+            except FileNotFoundError:
+                self.wfile.write(b"No trading signals available yet. Please run analysis first.")
+            except Exception as e:
+                self.wfile.write(f"Error displaying signals: {str(e)}".encode())
+                
+        # Health check endpoint
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "healthy"}).encode())
+            
+        # Handle 404 for other paths
+        else:
+            self.send_response(404)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b"404 Not Found")
+
+
+def start_web_server():
+    """Start a simple web server to keep the application alive on Render."""
+    # Get port from environment variable or use default
+    port = int(os.environ.get('PORT', 8080))
+    server_address = ('0.0.0.0', port)
+    httpd = HTTPServer(server_address, SimpleHandler)
+    logger.info(f"Starting web server on port {port}")
+    httpd.serve_forever()
+
+
 def main():
-    """Example usage of the StockDataManager class."""
+    """Main function to run both analysis and web server."""
     # Initialize data manager
     data_manager = StockDataManager()
     
-    # Run analysis
+    # Run initial analysis
     opportunities = data_manager.run_analysis()
     
     # Print opportunities
@@ -628,6 +805,41 @@ def main():
     for rec in opportunities['sell']:
         print(f"{rec['symbol']}: Current = ₹{rec['current_price']:.2f}, Target = ₹{rec['target_price']:.2f} " +
               f"(-{rec['potential_loss_pct']:.2f}%), RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
+    
+    # Start the web server in a separate thread
+    import threading
+    server_thread = threading.Thread(target=start_web_server)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Set up scheduled analysis runs (every 6 hours)
+    import sched
+    import time
+    
+    scheduler = sched.scheduler(time.time, time.sleep)
+    
+    def scheduled_analysis():
+        """Run analysis on schedule and reschedule next run."""
+        logger.info("Running scheduled analysis...")
+        try:
+            data_manager.run_analysis()
+            logger.info("Scheduled analysis complete")
+        except Exception as e:
+            logger.error(f"Error in scheduled analysis: {e}")
+        
+        # Schedule next run (6 hours later)
+        scheduler.enter(6 * 60 * 60, 1, scheduled_analysis)
+    
+    # Schedule first run (1 hour after startup)
+    scheduler.enter(60 * 60, 1, scheduled_analysis)
+    
+    try:
+        # Run the scheduler in the main thread
+        scheduler.run()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error(f"Error in main thread: {e}")
 
 
 if __name__ == "__main__":
