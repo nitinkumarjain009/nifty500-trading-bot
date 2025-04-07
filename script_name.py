@@ -14,18 +14,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger('trading_bot')
 
-# List of Nifty 50 stocks with their NSE symbols
-NIFTY50_STOCKS = [
-    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", 
-    "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BPCL", "BHARTIARTL", 
-    "BRITANNIA", "CIPLA", "COALINDIA", "DIVISLAB", "DRREDDY", 
-    "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", 
-    "HEROMOTOCO", "HINDALCO", "HINDUNILVR", "ICICIBANK", "ITC", 
-    "INDUSINDBK", "INFY", "JSWSTEEL", "KOTAKBANK", "LT", 
-    "M&M", "MARUTI", "NTPC", "NESTLEIND", "ONGC", 
-    "POWERGRID", "RELIANCE", "SBILIFE", "SBIN", "SUNPHARMA", 
-    "TCS", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TECHM", 
-    "TITAN", "UPL", "ULTRACEMCO", "WIPRO", "YESBANK"
+# List of Nifty 50 stocks with proper NSE/BSE symbols and added NSIT (Insight Enterprises Inc.)
+STOCKS = [
+     "NSIT", "NSE:ADANIENT", "NSE:ADANIPORTS", "NSE:APOLLOHOSP", "NSE:ASIANPAINT", "NSE:AXISBANK", 
+    "NSE:BAJAJ-AUTO", "NSE:BAJFINANCE", "NSE:BAJAJFINSV", "NSE:BPCL", "NSE:BHARTIARTL", 
+    "NSE:BRITANNIA", "NSE:CIPLA", "NSE:COALINDIA", "NSE:DIVISLAB", "NSE:DRREDDY", 
+    "NSE:EICHERMOT", "NSE:GRASIM", "NSE:HCLTECH", "NSE:HDFCBANK", "NSE:HDFCLIFE", 
+    "NSE:HEROMOTOCO", "NSE:HINDALCO", "NSE:HINDUNILVR", "NSE:ICICIBANK", "NSE:ITC", 
+    "NSE:INDUSINDBK", "NSE:INFY", "NSE:JSWSTEEL", "NSE:KOTAKBANK", "NSE:LT", 
+    "NSE:M&M", "NSE:MARUTI", "NSE:NTPC", "NSE:NESTLEIND", "NSE:ONGC", 
+    "NSE:POWERGRID", "NSE:RELIANCE", "NSE:SBILIFE", "NSE:SBIN", "NSE:SUNPHARMA", 
+    "NSE:TCS", "NSE:TATACONSUM", "NSE:TATAMOTORS", "NSE:TATASTEEL", "NSE:TECHM", 
+    "NSE:TITAN", "NSE:UPL", "NSE:ULTRACEMCO", "NSE:WIPRO", "NSE:YESBANK",
+     # Adding Insight Enterprises Inc.
 ]
 
 # Hardcoded Alpha Vantage API Key
@@ -45,27 +46,21 @@ class AlphaVantageDataSource:
         """Get daily stock data from Alpha Vantage.
         
         Args:
-            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT" or just "ASIANPAINT"
+            symbol (str): Stock symbol. NSE/BSE stocks already have proper prefixes
             outputsize (str): 'compact' returns the latest 100 datapoints, 'full' returns up to 20 years of data
             
         Returns:
             pandas.DataFrame: Stock data with columns open, high, low, close, volume
         """
-        # Handle case where NSE: prefix is not already present
-        if ":" not in symbol:
-            nse_symbol = f"NSE:{symbol}"
-        else:
-            nse_symbol = symbol
-            
         params = {
             "function": "TIME_SERIES_DAILY",
-            "symbol": nse_symbol,
+            "symbol": symbol,
             "outputsize": outputsize,
             "apikey": self.api_key,
             "datatype": "json"
         }
         
-        logger.info(f"Requesting daily data for {nse_symbol}")
+        logger.info(f"Requesting daily data for {symbol}")
         try:
             response = requests.get(self.base_url, params=params)
             response.raise_for_status()
@@ -73,17 +68,16 @@ class AlphaVantageDataSource:
             
             # Check for error messages
             if "Error Message" in data:
-                logger.error(f"API returned error for {nse_symbol}: {data['Error Message']}")
+                logger.error(f"API returned error for {symbol}: {data['Error Message']}")
                 # Try with BSE prefix if NSE fails
-                if nse_symbol.startswith("NSE:"):
-                    symbol_without_prefix = nse_symbol.replace("NSE:", "")
-                    bse_symbol = f"BSE:{symbol_without_prefix}"
+                if symbol.startswith("NSE:"):
+                    bse_symbol = symbol.replace("NSE:", "BSE:")
                     logger.info(f"Retrying with BSE symbol: {bse_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_daily_data(bse_symbol, outputsize)
                 # Try without any prefix as a last resort
-                elif nse_symbol.startswith("BSE:"):
-                    plain_symbol = nse_symbol.replace("BSE:", "")
+                elif symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
                     logger.info(f"Retrying with plain symbol: {plain_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_daily_data(plain_symbol, outputsize)
@@ -94,23 +88,22 @@ class AlphaVantageDataSource:
                 logger.warning(f"API limit warning: {data['Note']}")
                 logger.info(f"Waiting {self.rate_limit_delay * 3} seconds due to API limit")
                 time.sleep(self.rate_limit_delay * 3)  # Wait longer when limit is hit
-                return self.get_daily_data(nse_symbol, outputsize)  # Retry the same request
+                return self.get_daily_data(symbol, outputsize)  # Retry the same request
                 
             # Alpha Vantage returns data in a nested dictionary format
             time_series_data = data.get("Time Series (Daily)")
             if not time_series_data:
-                logger.error(f"No time series data found in response for {nse_symbol}")
+                logger.error(f"No time series data found in response for {symbol}")
                 logger.debug(f"Response content: {data}")
                 # Try with alternative symbol format
-                if nse_symbol.startswith("NSE:"):
-                    symbol_without_prefix = nse_symbol.replace("NSE:", "")
-                    bse_symbol = f"BSE:{symbol_without_prefix}"
+                if symbol.startswith("NSE:"):
+                    bse_symbol = symbol.replace("NSE:", "BSE:")
                     logger.info(f"Retrying with BSE symbol: {bse_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_daily_data(bse_symbol, outputsize)
                 # Try without any prefix as a last resort
-                elif nse_symbol.startswith("BSE:"):
-                    plain_symbol = nse_symbol.replace("BSE:", "")
+                elif symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
                     logger.info(f"Retrying with plain symbol: {plain_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_daily_data(plain_symbol, outputsize)
@@ -130,17 +123,17 @@ class AlphaVantageDataSource:
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col])
                 
-            logger.info(f"Successfully retrieved {len(df)} datapoints for {nse_symbol}")
+            logger.info(f"Successfully retrieved {len(df)} datapoints for {symbol}")
             return df
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error for {nse_symbol}: {e}")
+            logger.error(f"HTTP error for {symbol}: {e}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error for {nse_symbol}: {e}")
+            logger.error(f"Request error for {symbol}: {e}")
         except ValueError as e:
-            logger.error(f"JSON parsing error for {nse_symbol}: {e}")
+            logger.error(f"JSON parsing error for {symbol}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error for {nse_symbol}: {e}")
+            logger.error(f"Unexpected error for {symbol}: {e}")
             
         logger.info(f"Waiting {self.rate_limit_delay} seconds before next request due to rate limiting")
         time.sleep(self.rate_limit_delay)
@@ -150,29 +143,23 @@ class AlphaVantageDataSource:
         """Get intraday stock data from Alpha Vantage.
         
         Args:
-            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT" or just "ASIANPAINT"
+            symbol (str): Stock symbol. NSE/BSE stocks already have proper prefixes
             interval (str): Time interval between data points. Options: 1min, 5min, 15min, 30min, 60min
             outputsize (str): 'compact' returns the latest 100 datapoints, 'full' returns up to 30 days of data
             
         Returns:
             pandas.DataFrame: Stock data with columns open, high, low, close, volume
         """
-        # Handle case where NSE: prefix is not already present
-        if ":" not in symbol:
-            nse_symbol = f"NSE:{symbol}"
-        else:
-            nse_symbol = symbol
-            
         params = {
             "function": "TIME_SERIES_INTRADAY",
-            "symbol": nse_symbol,
+            "symbol": symbol,
             "interval": interval,
             "outputsize": outputsize,
             "apikey": self.api_key,
             "datatype": "json"
         }
         
-        logger.info(f"Requesting {interval} intraday data for {nse_symbol}")
+        logger.info(f"Requesting {interval} intraday data for {symbol}")
         try:
             response = requests.get(self.base_url, params=params)
             response.raise_for_status()
@@ -180,17 +167,16 @@ class AlphaVantageDataSource:
             
             # Check for error messages
             if "Error Message" in data:
-                logger.error(f"API returned error for {nse_symbol}: {data['Error Message']}")
+                logger.error(f"API returned error for {symbol}: {data['Error Message']}")
                 # Try with BSE prefix if NSE fails
-                if nse_symbol.startswith("NSE:"):
-                    symbol_without_prefix = nse_symbol.replace("NSE:", "")
-                    bse_symbol = f"BSE:{symbol_without_prefix}"
+                if symbol.startswith("NSE:"):
+                    bse_symbol = symbol.replace("NSE:", "BSE:")
                     logger.info(f"Retrying with BSE symbol: {bse_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_intraday_data(bse_symbol, interval, outputsize)
                 # Try without any prefix as a last resort
-                elif nse_symbol.startswith("BSE:"):
-                    plain_symbol = nse_symbol.replace("BSE:", "")
+                elif symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
                     logger.info(f"Retrying with plain symbol: {plain_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_intraday_data(plain_symbol, interval, outputsize)
@@ -201,24 +187,23 @@ class AlphaVantageDataSource:
                 logger.warning(f"API limit warning: {data['Note']}")
                 logger.info(f"Waiting {self.rate_limit_delay * 3} seconds due to API limit")
                 time.sleep(self.rate_limit_delay * 3)  # Wait longer when limit is hit
-                return self.get_intraday_data(nse_symbol, interval, outputsize)  # Retry
+                return self.get_intraday_data(symbol, interval, outputsize)  # Retry
                 
             # Alpha Vantage returns data in a nested dictionary format
             time_series_key = f"Time Series ({interval})"
             time_series_data = data.get(time_series_key)
             if not time_series_data:
-                logger.error(f"No time series data found in response for key: {time_series_key} for {nse_symbol}")
+                logger.error(f"No time series data found in response for key: {time_series_key} for {symbol}")
                 logger.debug(f"Response content: {data}")
                 # Try with alternative symbol format
-                if nse_symbol.startswith("NSE:"):
-                    symbol_without_prefix = nse_symbol.replace("NSE:", "")
-                    bse_symbol = f"BSE:{symbol_without_prefix}"
+                if symbol.startswith("NSE:"):
+                    bse_symbol = symbol.replace("NSE:", "BSE:")
                     logger.info(f"Retrying with BSE symbol: {bse_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_intraday_data(bse_symbol, interval, outputsize)
                 # Try without any prefix as a last resort
-                elif nse_symbol.startswith("BSE:"):
-                    plain_symbol = nse_symbol.replace("BSE:", "")
+                elif symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
                     logger.info(f"Retrying with plain symbol: {plain_symbol}")
                     time.sleep(self.rate_limit_delay)  # Wait before retry
                     return self.get_intraday_data(plain_symbol, interval, outputsize)
@@ -238,17 +223,17 @@ class AlphaVantageDataSource:
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col])
                 
-            logger.info(f"Successfully retrieved {len(df)} datapoints for {nse_symbol}")
+            logger.info(f"Successfully retrieved {len(df)} datapoints for {symbol}")
             return df
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error for {nse_symbol}: {e}")
+            logger.error(f"HTTP error for {symbol}: {e}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error for {nse_symbol}: {e}")
+            logger.error(f"Request error for {symbol}: {e}")
         except ValueError as e:
-            logger.error(f"JSON parsing error for {nse_symbol}: {e}")
+            logger.error(f"JSON parsing error for {symbol}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error for {nse_symbol}: {e}")
+            logger.error(f"Unexpected error for {symbol}: {e}")
             
         logger.info(f"Waiting {self.rate_limit_delay} seconds before next request due to rate limiting")
         time.sleep(self.rate_limit_delay)
@@ -308,9 +293,9 @@ class AlphaVantageDataSource:
         return None
 
 
-class Nifty50DataManager:
+class StockDataManager:
     def __init__(self, api_key=None, cache_dir="cache"):
-        """Initialize Nifty 50 data manager.
+        """Initialize Stock data manager.
         
         Args:
             api_key (str, optional): Alpha Vantage API key. Defaults to None.
@@ -318,7 +303,7 @@ class Nifty50DataManager:
         """
         self.data_source = AlphaVantageDataSource(api_key)
         self.cache_dir = cache_dir
-        self.stocks = NIFTY50_STOCKS
+        self.stocks = STOCKS
         
         # Create cache directory if it doesn't exist
         if not os.path.exists(cache_dir):
@@ -426,7 +411,7 @@ class Nifty50DataManager:
         return df
     
     def fetch_all_daily_data(self, max_workers=1):
-        """Fetch daily data for all Nifty 50 stocks.
+        """Fetch daily data for all stocks.
         
         Args:
             max_workers (int, optional): Maximum number of worker threads. Defaults to 1.
@@ -434,7 +419,7 @@ class Nifty50DataManager:
         Returns:
             dict: Dictionary mapping symbols to DataFrames
         """
-        logger.info(f"Fetching daily data for all {len(self.stocks)} Nifty 50 stocks with {max_workers} workers")
+        logger.info(f"Fetching daily data for all {len(self.stocks)} stocks with {max_workers} workers")
         results = {}
         
         # Limit max_workers to respect API rate limits (free tier is very limited)
@@ -637,9 +622,9 @@ class Nifty50DataManager:
 
 
 def main():
-    """Example usage of the Nifty50DataManager class."""
+    """Example usage of the StockDataManager class."""
     # Initialize data manager with API key
-    data_manager = Nifty50DataManager(ALPHA_VANTAGE_API_KEY)
+    data_manager = StockDataManager(ALPHA_VANTAGE_API_KEY)
     
     # Run analysis
     opportunities = data_manager.run_analysis()
@@ -647,11 +632,15 @@ def main():
     # Print opportunities
     print("\nBuy Recommendations:")
     for rec in opportunities['buy']:
-        print(f"{rec['symbol']}: Price = ₹{rec['price']:.2f}, RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
+        # Format price display based on stock market (₹ for NSE/BSE stocks, $ for US stocks)
+        currency_symbol = "₹" if "NSE:" in rec['symbol'] or "BSE:" in rec['symbol'] else "$"
+        print(f"{rec['symbol']}: Price = {currency_symbol}{rec['price']:.2f}, RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
     
     print("\nSell Recommendations:")
     for rec in opportunities['sell']:
-        print(f"{rec['symbol']}: Price = ₹{rec['price']:.2f}, RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
+        # Format price display based on stock market (₹ for NSE/BSE stocks, $ for US stocks)
+        currency_symbol = "₹" if "NSE:" in rec['symbol'] or "BSE:" in rec['symbol'] else "$"
+        print(f"{rec['symbol']}: Price = {currency_symbol}{rec['price']:.2f}, RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
 
 
 if __name__ == "__main__":
