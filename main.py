@@ -129,16 +129,13 @@ def calculate_chandelier_exit(df: pd.DataFrame, period: int = 22, multiplier: in
 def get_stock_data(symbol: str, interval: str = '30m', period: str = '7d') -> Optional[pd.DataFrame]:
     for attempt in range(MAX_RETRIES):
         try:
-            # Create a new session for each request
-            session = yf.Tickers(tickers=symbol, session=True).tickers[symbol].session
-            # Download with session
+            # Use direct download without trying to create a custom session
             data = yf.download(
                 symbol, 
                 interval=interval, 
                 period=period,
                 progress=False,  # Disable progress bar to reduce console clutter
-                threads=False,   # Disable multithreading to prevent issues
-                session=session  # Use the session
+                threads=False    # Disable multithreading to prevent issues
             )
             
             # Check if data is empty
