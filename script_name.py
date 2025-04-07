@@ -29,7 +29,7 @@ NIFTY50_STOCKS = [
 ]
 
 # Hardcoded Alpha Vantage API Key
-ALPHA_VANTAGE_API_KEY = "8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU"
+ALPHA_VANTAGE_API_KEY = "UW3VK4H7EYAEXZ6K"
 
 class AlphaVantageDataSource:
     def __init__(self, api_key=None):
