@@ -28,48 +28,16 @@ NIFTY50_STOCKS = [
     "TITAN", "UPL", "ULTRACEMCO", "WIPRO", "YESBANK"
 ]
 
-def get_api_key_from_secrets():
-    """Get API key from secrets file."""
-    # Try .env file format
-    try:
-        with open('.env', 'r') as f:
-            for line in f:
-                if line.strip().startswith('ALPHA_VANTAGE_API_KEY='):
-                    return line.strip().split('=', 1)[1].strip().strip('"\'')
-    except FileNotFoundError:
-        pass
-    
-    # Try JSON format (.secrets file)
-    try:
-        with open('.secrets', 'r') as f:
-            secrets = json.load(f)
-            return secrets.get('ALPHA_VANTAGE_API_KEY')
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    
-    # Try simple key file (just contains the key)
-    try:
-        with open('alphavantage.key', 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        pass
-        
-    # Try secrets directory
-    try:
-        with open('secrets/alphavantage.key', 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        pass
-    
-    logger.error("Could not find Alpha Vantage API key in any secrets file")
-    return None
+# Hardcoded Alpha Vantage API Key
+ALPHA_VANTAGE_API_KEY = "8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU"
 
 class AlphaVantageDataSource:
     def __init__(self, api_key=None):
         """Initialize Alpha Vantage API client."""
-        self.api_key = api_key or os.getenv('ALPHA_VANTAGE_API_KEY')
+        # Use hardcoded key as primary, fallback to parameter or env var
+        self.api_key = ALPHA_VANTAGE_API_KEY or api_key or os.getenv('ALPHA_VANTAGE_API_KEY')
         if not self.api_key:
-            raise ValueError("Alpha Vantage API key is required. Set it as an environment variable ALPHA_VANTAGE_API_KEY or pass it as a parameter.")
+            raise ValueError("Alpha Vantage API key is required.")
         self.base_url = "https://www.alphavantage.co/query"
         self.rate_limit_delay = 12  # Alpha Vantage has a limit of 5 API calls per minute for free tier
     
@@ -77,21 +45,27 @@ class AlphaVantageDataSource:
         """Get daily stock data from Alpha Vantage.
         
         Args:
-            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT"
+            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT" or just "ASIANPAINT"
             outputsize (str): 'compact' returns the latest 100 datapoints, 'full' returns up to 20 years of data
             
         Returns:
             pandas.DataFrame: Stock data with columns open, high, low, close, volume
         """
+        # Handle case where NSE: prefix is not already present
+        if not symbol.startswith("NSE:") and not symbol.startswith("BSE:"):
+            nse_symbol = f"NSE:{symbol}"
+        else:
+            nse_symbol = symbol
+            
         params = {
             "function": "TIME_SERIES_DAILY",
-            "symbol": symbol,
+            "symbol": nse_symbol,
             "outputsize": outputsize,
             "apikey": self.api_key,
             "datatype": "json"
         }
         
-        logger.info(f"Requesting daily data for {symbol}")
+        logger.info(f"Requesting daily data for {nse_symbol}")
         try:
             response = requests.get(self.base_url, params=params)
             response.raise_for_status()
@@ -99,18 +73,49 @@ class AlphaVantageDataSource:
             
             # Check for error messages
             if "Error Message" in data:
-                logger.error(f"API returned error: {data['Error Message']}")
+                logger.error(f"API returned error for {nse_symbol}: {data['Error Message']}")
+                # Try with BSE prefix if NSE fails
+                if nse_symbol.startswith("NSE:"):
+                    bse_symbol = f"BSE:{symbol.replace('NSE:', '')}"
+                    logger.info(f"Retrying with BSE symbol: {bse_symbol}")
+                    return self.get_daily_data(bse_symbol, outputsize)
+                # Try without any prefix as a last resort
+                elif nse_symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
+                    logger.info(f"Retrying with plain symbol: {plain_symbol}")
+                    return self.get_daily_data(plain_symbol, outputsize)
+                return None
+                
+            # Check for Note key which indicates API limit reached
+            if "Note" in data:
+                logger.warning(f"API limit warning: {data['Note']}")
+                logger.info(f"Waiting {self.rate_limit_delay * 5} seconds due to API limit")
+                time.sleep(self.rate_limit_delay * 5)  # Wait longer when limit is hit
                 return None
                 
             # Alpha Vantage returns data in a nested dictionary format
             time_series_data = data.get("Time Series (Daily)")
             if not time_series_data:
-                logger.error("No time series data found in response")
+                logger.error(f"No time series data found in response for {nse_symbol}")
+                # Try with alternative symbol format
+                if nse_symbol.startswith("NSE:"):
+                    bse_symbol = f"BSE:{symbol.replace('NSE:', '')}"
+                    logger.info(f"Retrying with BSE symbol: {bse_symbol}")
+                    return self.get_daily_data(bse_symbol, outputsize)
+                # Try without any prefix as a last resort
+                elif nse_symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
+                    logger.info(f"Retrying with plain symbol: {plain_symbol}")
+                    return self.get_daily_data(plain_symbol, outputsize)
                 return None
                 
             # Convert to DataFrame
             df = pd.DataFrame.from_dict(time_series_data, orient='index')
-            df.columns = [col.split(". ")[1] for col in df.columns]
+            
+            # Check if columns need renaming
+            if all(col.startswith(('1. ', '2. ', '3. ', '4. ', '5. ')) for col in df.columns):
+                df.columns = [col.split(". ")[1] for col in df.columns]
+            
             df.index = pd.to_datetime(df.index)
             df = df.sort_index(ascending=True)
             
@@ -118,17 +123,17 @@ class AlphaVantageDataSource:
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col])
                 
-            logger.info(f"Successfully retrieved {len(df)} datapoints for {symbol}")
+            logger.info(f"Successfully retrieved {len(df)} datapoints for {nse_symbol}")
             return df
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error: {e}")
+            logger.error(f"HTTP error for {nse_symbol}: {e}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error: {e}")
+            logger.error(f"Request error for {nse_symbol}: {e}")
         except ValueError as e:
-            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"JSON parsing error for {nse_symbol}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error for {nse_symbol}: {e}")
             
         logger.info(f"Waiting {self.rate_limit_delay} seconds before next request due to rate limiting")
         time.sleep(self.rate_limit_delay)
@@ -138,23 +143,29 @@ class AlphaVantageDataSource:
         """Get intraday stock data from Alpha Vantage.
         
         Args:
-            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT"
+            symbol (str): Stock symbol. For Indian stocks, use format "NSE:ASIANPAINT" or just "ASIANPAINT"
             interval (str): Time interval between data points. Options: 1min, 5min, 15min, 30min, 60min
             outputsize (str): 'compact' returns the latest 100 datapoints, 'full' returns up to 30 days of data
             
         Returns:
             pandas.DataFrame: Stock data with columns open, high, low, close, volume
         """
+        # Handle case where NSE: prefix is not already present
+        if not symbol.startswith("NSE:") and not symbol.startswith("BSE:"):
+            nse_symbol = f"NSE:{symbol}"
+        else:
+            nse_symbol = symbol
+            
         params = {
             "function": "TIME_SERIES_INTRADAY",
-            "symbol": symbol,
+            "symbol": nse_symbol,
             "interval": interval,
             "outputsize": outputsize,
             "apikey": self.api_key,
             "datatype": "json"
         }
         
-        logger.info(f"Requesting {interval} intraday data for {symbol}")
+        logger.info(f"Requesting {interval} intraday data for {nse_symbol}")
         try:
             response = requests.get(self.base_url, params=params)
             response.raise_for_status()
@@ -162,19 +173,50 @@ class AlphaVantageDataSource:
             
             # Check for error messages
             if "Error Message" in data:
-                logger.error(f"API returned error: {data['Error Message']}")
+                logger.error(f"API returned error for {nse_symbol}: {data['Error Message']}")
+                # Try with BSE prefix if NSE fails
+                if nse_symbol.startswith("NSE:"):
+                    bse_symbol = f"BSE:{symbol.replace('NSE:', '')}"
+                    logger.info(f"Retrying with BSE symbol: {bse_symbol}")
+                    return self.get_intraday_data(bse_symbol, interval, outputsize)
+                # Try without any prefix as a last resort
+                elif nse_symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
+                    logger.info(f"Retrying with plain symbol: {plain_symbol}")
+                    return self.get_intraday_data(plain_symbol, interval, outputsize)
+                return None
+                
+            # Check for Note key which indicates API limit reached
+            if "Note" in data:
+                logger.warning(f"API limit warning: {data['Note']}")
+                logger.info(f"Waiting {self.rate_limit_delay * 5} seconds due to API limit")
+                time.sleep(self.rate_limit_delay * 5)  # Wait longer when limit is hit
                 return None
                 
             # Alpha Vantage returns data in a nested dictionary format
             time_series_key = f"Time Series ({interval})"
             time_series_data = data.get(time_series_key)
             if not time_series_data:
-                logger.error(f"No time series data found in response for key: {time_series_key}")
+                logger.error(f"No time series data found in response for key: {time_series_key} for {nse_symbol}")
+                # Try with alternative symbol format
+                if nse_symbol.startswith("NSE:"):
+                    bse_symbol = f"BSE:{symbol.replace('NSE:', '')}"
+                    logger.info(f"Retrying with BSE symbol: {bse_symbol}")
+                    return self.get_intraday_data(bse_symbol, interval, outputsize)
+                # Try without any prefix as a last resort
+                elif nse_symbol.startswith("BSE:"):
+                    plain_symbol = symbol.replace("BSE:", "")
+                    logger.info(f"Retrying with plain symbol: {plain_symbol}")
+                    return self.get_intraday_data(plain_symbol, interval, outputsize)
                 return None
                 
             # Convert to DataFrame
             df = pd.DataFrame.from_dict(time_series_data, orient='index')
-            df.columns = [col.split(". ")[1] for col in df.columns]
+            
+            # Check if columns need renaming
+            if all(col.startswith(('1. ', '2. ', '3. ', '4. ', '5. ')) for col in df.columns):
+                df.columns = [col.split(". ")[1] for col in df.columns]
+                
             df.index = pd.to_datetime(df.index)
             df = df.sort_index(ascending=True)
             
@@ -182,17 +224,17 @@ class AlphaVantageDataSource:
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col])
                 
-            logger.info(f"Successfully retrieved {len(df)} datapoints for {symbol}")
+            logger.info(f"Successfully retrieved {len(df)} datapoints for {nse_symbol}")
             return df
             
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error: {e}")
+            logger.error(f"HTTP error for {nse_symbol}: {e}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error: {e}")
+            logger.error(f"Request error for {nse_symbol}: {e}")
         except ValueError as e:
-            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"JSON parsing error for {nse_symbol}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error for {nse_symbol}: {e}")
             
         logger.info(f"Waiting {self.rate_limit_delay} seconds before next request due to rate limiting")
         time.sleep(self.rate_limit_delay)
@@ -222,6 +264,12 @@ class AlphaVantageDataSource:
             # Check for error messages
             if "Error Message" in data:
                 logger.error(f"API returned error: {data['Error Message']}")
+                return None
+                
+            # Check for API limit reached
+            if "Note" in data:
+                logger.warning(f"API limit warning: {data['Note']}")
+                time.sleep(self.rate_limit_delay * 5)
                 return None
                 
             results = data.get("bestMatches", [])
@@ -301,7 +349,6 @@ class Nifty50DataManager:
         Returns:
             pandas.DataFrame: Daily stock data
         """
-        nse_symbol = f"NSE:{symbol}"
         cache_path = self._get_cache_path(symbol, "daily")
         
         # Check if we have fresh cache
@@ -309,10 +356,21 @@ class Nifty50DataManager:
             logger.info(f"Using cached daily data for {symbol}")
             return pd.read_csv(cache_path, index_col=0, parse_dates=True)
         
-        # Get fresh data from API
-        df = self.data_source.get_daily_data(nse_symbol)
+        # Try multiple approaches to get data
+        df = None
+        
+        # First try with NSE prefix
+        df = self.data_source.get_daily_data(symbol)
+        
+        # If failed, try without any prefix or with BSE
+        if df is None:
+            logger.info(f"Retrying {symbol} without prefix...")
+            # Symbol will be handled in data_source methods
+            
+        # Save cache if we got data
         if df is not None:
             df.to_csv(cache_path)
+            
         return df
     
     def get_intraday_data(self, symbol, interval="15min", force_refresh=False):
@@ -326,7 +384,6 @@ class Nifty50DataManager:
         Returns:
             pandas.DataFrame: Intraday stock data
         """
-        nse_symbol = f"NSE:{symbol}"
         cache_path = self._get_cache_path(symbol, f"intraday_{interval}")
         
         # For intraday data, we want more frequent refreshes
@@ -335,17 +392,28 @@ class Nifty50DataManager:
             logger.info(f"Using cached {interval} intraday data for {symbol}")
             return pd.read_csv(cache_path, index_col=0, parse_dates=True)
         
-        # Get fresh data from API
-        df = self.data_source.get_intraday_data(nse_symbol, interval=interval)
+        # Try multiple approaches to get data
+        df = None
+        
+        # First try with NSE prefix
+        df = self.data_source.get_intraday_data(symbol, interval=interval)
+        
+        # If failed, try without any prefix or with BSE
+        if df is None:
+            logger.info(f"Retrying {symbol} without prefix for intraday data...")
+            # Symbol will be handled in data_source methods
+            
+        # Save cache if we got data
         if df is not None:
             df.to_csv(cache_path)
+            
         return df
     
-    def fetch_all_daily_data(self, max_workers=5):
+    def fetch_all_daily_data(self, max_workers=3):
         """Fetch daily data for all Nifty 50 stocks.
         
         Args:
-            max_workers (int, optional): Maximum number of worker threads. Defaults to 5.
+            max_workers (int, optional): Maximum number of worker threads. Defaults to 3.
             
         Returns:
             dict: Dictionary mapping symbols to DataFrames
@@ -353,7 +421,7 @@ class Nifty50DataManager:
         logger.info(f"Fetching daily data for all {len(self.stocks)} Nifty 50 stocks")
         results = {}
         
-        # Use ThreadPoolExecutor to speed up fetching
+        # Use ThreadPoolExecutor to speed up fetching but limit workers to respect API rate limits
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_symbol = {
                 executor.submit(self.get_daily_data, symbol): symbol 
@@ -388,6 +456,7 @@ class Nifty50DataManager:
         
         for symbol, df in dataframes_dict.items():
             if df is None or len(df) < days + 1:
+                logger.warning(f"Insufficient data for {symbol}, skipping metrics calculation")
                 continue
                 
             try:
@@ -396,6 +465,11 @@ class Nifty50DataManager:
                 
                 # Get recent data
                 recent_df = df.iloc[-days-1:]
+                
+                # Make sure we have enough data
+                if len(recent_df) < days:
+                    logger.warning(f"Insufficient recent data for {symbol}, skipping metrics calculation")
+                    continue
                 
                 # Calculate metrics
                 start_price = recent_df['close'].iloc[0]
@@ -408,13 +482,24 @@ class Nifty50DataManager:
                 # Calculate average volume
                 avg_volume = recent_df['volume'].mean()
                 
-                # Calculate RSI (14-day)
-                delta = df['close'].diff()
-                gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-                loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-                rs = gain / loss
-                rsi = 100 - (100 / (1 + rs))
-                current_rsi = rsi.iloc[-1]
+                # Calculate RSI (14-day) with error handling
+                try:
+                    delta = df['close'].diff()
+                    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+                    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+                    
+                    # Avoid division by zero
+                    rs = gain / loss.replace(0, float('nan'))
+                    rs = rs.fillna(0)  # Replace NaN with 0
+                    rsi = 100 - (100 / (1 + rs))
+                    current_rsi = rsi.iloc[-1]
+                    
+                    # Handle potential NaN in RSI
+                    if pd.isna(current_rsi):
+                        current_rsi = 50  # Default to neutral RSI if calculation fails
+                except Exception as e:
+                    logger.error(f"Error calculating RSI for {symbol}: {e}")
+                    current_rsi = 50  # Default value
                 
                 metrics.append({
                     'symbol': symbol,
@@ -430,6 +515,11 @@ class Nifty50DataManager:
             except Exception as e:
                 logger.error(f"Error calculating metrics for {symbol}: {e}")
         
+        if not metrics:
+            logger.warning("No metrics calculated for any stock")
+            return pd.DataFrame(columns=['symbol', 'start_price', 'end_price', 'price_change_pct', 
+                                         'avg_daily_return', 'volatility', 'avg_volume', 'rsi'])
+        
         return pd.DataFrame(metrics)
     
     def identify_trading_opportunities(self, metrics_df):
@@ -443,6 +533,10 @@ class Nifty50DataManager:
         """
         buy_recommendations = []
         sell_recommendations = []
+        
+        if metrics_df.empty:
+            logger.warning("No metrics data available to identify trading opportunities")
+            return {'buy': [], 'sell': []}
         
         # Basic strategy:
         # Buy: Oversold (RSI < 30) + Negative price change
@@ -483,6 +577,13 @@ class Nifty50DataManager:
             opportunities (dict): Dictionary with buy and sell recommendations
             filepath (str, optional): Output file path. Defaults to "trading_signals.json".
         """
+        # Format decimal values for JSON serialization
+        for rec_type in ['buy', 'sell']:
+            for rec in opportunities[rec_type]:
+                rec['price'] = float(rec['price'])
+                rec['rsi'] = float(rec['rsi'])
+                rec['price_change'] = float(rec['price_change'])
+        
         with open(filepath, 'w') as f:
             json.dump(opportunities, f, indent=4)
         logger.info(f"Trading signals exported to {filepath}")
@@ -495,6 +596,11 @@ class Nifty50DataManager:
         """
         # 1. Fetch data for all stocks
         all_data = self.fetch_all_daily_data()
+        
+        # Check if we got any data
+        if not all_data:
+            logger.error("Failed to fetch data for any stocks. Check API key and connectivity.")
+            return {'buy': [], 'sell': []}
         
         # 2. Calculate performance metrics
         metrics = self.calculate_performance_metrics(all_data)
@@ -515,19 +621,8 @@ class Nifty50DataManager:
 
 def main():
     """Example usage of the Nifty50DataManager class."""
-    # Try to get API key from secrets or environment variable
-    api_key = get_api_key_from_secrets() or os.getenv('ALPHA_VANTAGE_API_KEY')
-    
-    if not api_key:
-        # Prompt user for API key if not found
-        api_key = input("8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU")
-    
-    if not api_key:
-        logger.error("Alpha Vantage API key not provided")
-        return
-    
-    # Initialize data manager
-    data_manager = Nifty50DataManager(api_key)
+    # Initialize data manager with hardcoded API key
+    data_manager = Nifty50DataManager(ALPHA_VANTAGE_API_KEY)
     
     # Run analysis
     opportunities = data_manager.run_analysis()
