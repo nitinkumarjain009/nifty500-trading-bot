@@ -33,7 +33,7 @@ def load_nifty500_stocks() -> List[str]:
     try:
         # You might need to update this with a proper source for Nifty 500 stocks
         # This is a placeholder - in production, fetch from NSE website or use a local file
-        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
         df = pd.read_csv(url)
         # Convert to Yahoo Finance compatible symbols (NSE: prefix)
         symbols = [f"{symbol}.NS" for symbol in df['Symbol'].tolist()]
