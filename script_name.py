@@ -520,7 +520,7 @@ def main():
     
     if not api_key:
         # Prompt user for API key if not found
-        api_key = input("Please enter your Alpha Vantage API key: ")
+        api_key = input("8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU")
     
     if not api_key:
         logger.error("Alpha Vantage API key not provided")
