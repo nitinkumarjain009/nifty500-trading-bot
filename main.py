@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 import os
 import json
+import random
 from typing import List, Dict, Tuple, Optional
 
 # Configure logging
@@ -27,6 +28,13 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8017759392:AAEwM-W-y83lLXTjlP
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '711856868')
 WHATSAPP_NUMBER = os.environ.get('WHATSAPP_NUMBER', '+918376906697')
 WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'https://api.whatsapp.com/send')  # Example URL, you'll need a proper WhatsApp Business API
+
+# API request settings
+MAX_RETRIES = 3
+BASE_DELAY = 2  # Base delay in seconds
+MAX_DELAY = 10  # Maximum delay in seconds
+BATCH_SIZE = 5  # Process stocks in small batches
+INTER_BATCH_DELAY = 15  # Seconds between batches to avoid API throttling
 
 # Load Nifty 500 stocks
 def load_nifty500_stocks() -> List[str]:
@@ -117,17 +125,48 @@ def calculate_chandelier_exit(df: pd.DataFrame, period: int = 22, multiplier: in
     
     return df
 
-# Get stock data
+# Get stock data with retries and exponential backoff
 def get_stock_data(symbol: str, interval: str = '30m', period: str = '7d') -> Optional[pd.DataFrame]:
-    try:
-        data = yf.download(symbol, interval=interval, period=period)
-        if data.empty:
-            logger.warning(f"No data found for {symbol}")
-            return None
-        return data
-    except Exception as e:
-        logger.error(f"Error fetching data for {symbol}: {e}")
-        return None
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Create a new session for each request
+            session = yf.Tickers(tickers=symbol, session=True).tickers[symbol].session
+            # Download with session
+            data = yf.download(
+                symbol, 
+                interval=interval, 
+                period=period,
+                progress=False,  # Disable progress bar to reduce console clutter
+                threads=False,   # Disable multithreading to prevent issues
+                session=session  # Use the session
+            )
+            
+            # Check if data is empty
+            if data.empty:
+                logger.warning(f"No data found for {symbol} (Attempt {attempt+1}/{MAX_RETRIES})")
+                if attempt < MAX_RETRIES - 1:
+                    # Calculate exponential backoff delay with jitter
+                    delay = min(BASE_DELAY * (2 ** attempt) + random.uniform(0, 1), MAX_DELAY)
+                    logger.info(f"Retrying in {delay:.2f} seconds...")
+                    time.sleep(delay)
+                continue
+            
+            logger.info(f"Successfully fetched data for {symbol}")
+            return data
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error fetching data for {symbol} (Attempt {attempt+1}/{MAX_RETRIES}): {error_msg}")
+            
+            if attempt < MAX_RETRIES - 1:
+                # Calculate exponential backoff delay with jitter
+                delay = min(BASE_DELAY * (2 ** attempt) + random.uniform(0, 1), MAX_DELAY)
+                logger.info(f"Retrying in {delay:.2f} seconds...")
+                time.sleep(delay)
+            else:
+                logger.error(f"All attempts failed for {symbol}")
+                
+    return None
 
 # Generate trading signals
 def generate_signals(symbol: str) -> Optional[Dict]:
@@ -230,25 +269,36 @@ def format_signal_message(signal: Dict) -> str:
            f"*Reason:* {signal['reason']}\n\n" \
            f"*Indicators:* SuperTrend & Chandelier Exit (30m)"
 
-# Process all stocks for signals
+# Process stocks in batches with delays to avoid API throttling
 def process_stocks():
     logger.info("Starting stock analysis...")
     stocks = load_nifty500_stocks()
     signals_found = False
     
-    for symbol in stocks:
-        signal = generate_signals(symbol)
-        if signal:
-            signals_found = True
-            message = format_signal_message(signal)
-            logger.info(f"Signal found for {symbol}: {signal['signal']}")
+    # Process stocks in batches
+    for i in range(0, len(stocks), BATCH_SIZE):
+        batch = stocks[i:i+BATCH_SIZE]
+        logger.info(f"Processing batch {i//BATCH_SIZE + 1}/{(len(stocks) + BATCH_SIZE - 1)//BATCH_SIZE}: {', '.join(batch)}")
+        
+        for symbol in batch:
+            signal = generate_signals(symbol)
+            if signal:
+                signals_found = True
+                message = format_signal_message(signal)
+                logger.info(f"Signal found for {symbol}: {signal['signal']}")
+                
+                # Send notifications
+                send_telegram_message(message)
+                send_whatsapp_message(message.replace('*', ''))  # Remove markdown for WhatsApp
             
-            # Send notifications
-            send_telegram_message(message)
-            send_whatsapp_message(message.replace('*', ''))  # Remove markdown for WhatsApp
-            
-            # Rate limiting to avoid API throttling
-            time.sleep(1)
+            # Small delay between stocks within a batch
+            time.sleep(random.uniform(0.5, 1.5))
+        
+        # Larger delay between batches
+        if i + BATCH_SIZE < len(stocks):
+            delay = INTER_BATCH_DELAY + random.uniform(-2, 2)  # Add some jitter
+            logger.info(f"Batch complete. Waiting {delay:.2f} seconds before next batch...")
+            time.sleep(delay)
     
     if not signals_found:
         logger.info("No signals found in this scan")
