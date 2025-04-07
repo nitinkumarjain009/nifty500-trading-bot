@@ -1,4 +1,3 @@
-# Check if required packages are installed, if not install them
 import subprocess
 import sys
 
@@ -27,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from nsetools import Nse
 import nsepy
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 # Setup logging
 logging.basicConfig(
@@ -57,15 +57,7 @@ class NSEDataSource:
         self.rate_limit_delay = 1  # Add small delay between requests to avoid overwhelming the NSE servers
     
     def get_daily_data(self, symbol, days=100):
-        """Get daily stock data from NSE.
-        
-        Args:
-            symbol (str): Stock symbol
-            days (int): Number of trading days of data to fetch
-            
-        Returns:
-            pandas.DataFrame: Stock data with columns open, high, low, close, volume
-        """
+        """Get daily stock data from NSE."""
         logger.info(f"Requesting daily data for {symbol}")
         try:
             # Calculate the start date (going back approximately 'days' trading days)
@@ -106,14 +98,7 @@ class NSEDataSource:
             return None
     
     def get_current_price(self, symbol):
-        """Get current price data from NSE.
-        
-        Args:
-            symbol (str): Stock symbol
-            
-        Returns:
-            dict: Current price data including lastPrice
-        """
+        """Get current price data from NSE."""
         logger.info(f"Requesting current price for {symbol}")
         try:
             # Get quote data
@@ -131,14 +116,7 @@ class NSEDataSource:
             return None
     
     def get_latest_data(self, symbol):
-        """Get latest available data point from NSE.
-        
-        Args:
-            symbol (str): Stock symbol
-            
-        Returns:
-            pandas.DataFrame: Latest stock data
-        """
+        """Get latest available data point from NSE."""
         logger.info(f"Requesting current data for {symbol}")
         try:
             # Get quote data
@@ -170,14 +148,7 @@ class NSEDataSource:
             return None
 
     def search_symbol(self, pattern):
-        """Search for a stock symbol.
-        
-        Args:
-            pattern (str): Pattern to search for
-            
-        Returns:
-            list: List of matching symbols
-        """
+        """Search for a stock symbol."""
         logger.info(f"Searching for symbol with pattern: {pattern}")
         try:
             matches = self.nse.get_stock_codes(cached=False)
@@ -208,11 +179,7 @@ class NSEDataSource:
 
 class StockDataManager:
     def __init__(self, cache_dir="cache"):
-        """Initialize Stock data manager.
-        
-        Args:
-            cache_dir (str, optional): Directory to cache data. Defaults to "cache".
-        """
+        """Initialize Stock data manager."""
         self.data_source = NSEDataSource()
         self.cache_dir = cache_dir
         self.stocks = STOCKS
@@ -222,29 +189,13 @@ class StockDataManager:
             os.makedirs(cache_dir)
     
     def _get_cache_path(self, symbol, data_type):
-        """Get cache file path for a symbol and data type.
-        
-        Args:
-            symbol (str): Stock symbol
-            data_type (str): Type of data (daily, intraday, etc.)
-            
-        Returns:
-            str: Cache file path
-        """
+        """Get cache file path for a symbol and data type."""
         # Clean symbol for filename (remove any special characters)
         clean_symbol = symbol.replace("-", "_").replace("/", "_")
         return os.path.join(self.cache_dir, f"{clean_symbol}_{data_type}.csv")
     
     def _is_cache_fresh(self, filepath, max_age_hours=12):
-        """Check if cache file is fresh.
-        
-        Args:
-            filepath (str): Path to cache file
-            max_age_hours (int, optional): Maximum age in hours. Defaults to 12.
-            
-        Returns:
-            bool: True if cache is fresh, False otherwise
-        """
+        """Check if cache file is fresh."""
         if not os.path.exists(filepath):
             return False
         
@@ -253,15 +204,7 @@ class StockDataManager:
         return age.total_seconds() < max_age_hours * 3600
     
     def get_daily_data(self, symbol, force_refresh=False):
-        """Get daily data for a symbol, using cache if available.
-        
-        Args:
-            symbol (str): Stock symbol
-            force_refresh (bool, optional): Force refresh from API. Defaults to False.
-            
-        Returns:
-            pandas.DataFrame: Daily stock data
-        """
+        """Get daily data for a symbol, using cache if available."""
         cache_path = self._get_cache_path(symbol, "daily")
         
         # Check if we have fresh cache
@@ -287,15 +230,7 @@ class StockDataManager:
         return df
     
     def get_latest_data(self, symbol, force_refresh=False):
-        """Get latest data for a symbol, using cache if available.
-        
-        Args:
-            symbol (str): Stock symbol
-            force_refresh (bool, optional): Force refresh from API. Defaults to False.
-            
-        Returns:
-            pandas.DataFrame: Latest stock data
-        """
+        """Get latest data for a symbol, using cache if available."""
         cache_path = self._get_cache_path(symbol, "latest")
         
         # For latest data, we want more frequent refreshes
@@ -322,28 +257,14 @@ class StockDataManager:
         return df
     
     def get_current_price(self, symbol):
-        """Get current price for a symbol directly from NSE.
-        
-        Args:
-            symbol (str): Stock symbol
-            
-        Returns:
-            float: Current price or None if not available
-        """
+        """Get current price for a symbol directly from NSE."""
         quote = self.data_source.get_current_price(symbol)
         if quote and 'lastPrice' in quote:
             return quote['lastPrice']
         return None
     
     def fetch_all_daily_data(self, max_workers=4):
-        """Fetch daily data for all stocks.
-        
-        Args:
-            max_workers (int, optional): Maximum number of worker threads. Defaults to 4.
-            
-        Returns:
-            dict: Dictionary mapping symbols to DataFrames
-        """
+        """Fetch daily data for all stocks."""
         logger.info(f"Fetching daily data for all {len(self.stocks)} stocks with {max_workers} workers")
         results = {}
         
@@ -369,15 +290,7 @@ class StockDataManager:
         return results
     
     def calculate_performance_metrics(self, dataframes_dict, days=30):
-        """Calculate performance metrics for each stock.
-        
-        Args:
-            dataframes_dict (dict): Dictionary mapping symbols to DataFrames
-            days (int, optional): Number of days to calculate metrics for. Defaults to 30.
-            
-        Returns:
-            pandas.DataFrame: DataFrame with performance metrics
-        """
+        """Calculate performance metrics for each stock."""
         metrics = []
         
         for symbol, df in dataframes_dict.items():
@@ -455,56 +368,24 @@ class StockDataManager:
         return pd.DataFrame(metrics)
     
     def calculate_target_price(self, current_price, rsi, price_change_pct, is_buy):
-        """Calculate target price based on RSI, current price and recent movement.
-        
-        Args:
-            current_price (float): Current stock price
-            rsi (float): Relative Strength Index
-            price_change_pct (float): Recent price change percentage
-            is_buy (bool): True if calculating buy target, False for sell target
-            
-        Returns:
-            float: Target price
-        """
+        """Calculate target price based on RSI, current price and recent movement."""
         if is_buy:
             # For buy recommendations (oversold territory)
-            # Target is a reversion to mean - stronger the oversold, higher the expected bounce
-            # Formula: The more oversold (lower RSI), the higher potential rebound
             rsi_factor = (30 - rsi) / 30 if rsi < 30 else 0.05  # RSI influence factor
-            
-            # Recent decline factor (the bigger the decline, the stronger the potential rebound)
             decline_factor = min(abs(price_change_pct), 20) / 100 if price_change_pct < 0 else 0.05
-            
-            # Combined upside potential (between 5% and 15%)
             upside_potential = max(0.05, min(0.15, rsi_factor + decline_factor))
-            
             target_price = current_price * (1 + upside_potential)
-            
         else:
             # For sell recommendations (overbought territory)
-            # Target is a reversion to mean - stronger the overbought, higher the expected correction
-            # Formula: The more overbought (higher RSI), the deeper potential correction
             rsi_factor = (rsi - 70) / 30 if rsi > 70 else 0.05  # RSI influence factor
-            
-            # Recent rise factor (the bigger the rise, the stronger the potential correction)
             rise_factor = min(abs(price_change_pct), 20) / 100 if price_change_pct > 0 else 0.05
-            
-            # Combined downside potential (between 5% and 15%)
             downside_potential = max(0.05, min(0.15, rsi_factor + rise_factor))
-            
             target_price = current_price * (1 - downside_potential)
         
         return round(target_price, 2)
     
     def identify_trading_opportunities(self, metrics_df):
-        """Identify trading opportunities based on metrics.
-        
-        Args:
-            metrics_df (pandas.DataFrame): DataFrame with performance metrics
-            
-        Returns:
-            dict: Dictionary with buy and sell recommendations
-        """
+        """Identify trading opportunities based on metrics."""
         buy_recommendations = []
         sell_recommendations = []
         
@@ -558,12 +439,7 @@ class StockDataManager:
         }
     
     def export_opportunities_to_json(self, opportunities, filepath="trading_signals.json"):
-        """Export trading opportunities to JSON file.
-        
-        Args:
-            opportunities (dict): Dictionary with buy and sell recommendations
-            filepath (str, optional): Output file path. Defaults to "trading_signals.json".
-        """
+        """Export trading opportunities to JSON file."""
         # Format decimal values for JSON serialization
         for rec_type in ['buy', 'sell']:
             for rec in opportunities[rec_type]:
@@ -581,13 +457,9 @@ class StockDataManager:
         logger.info(f"Trading signals exported to {filepath}")
     
     def run_analysis(self):
-        """Run full analysis pipeline.
-        
-        Returns:
-            dict: Dictionary with buy and sell recommendations
-        """
+        """Run full analysis pipeline."""
         # 1. Fetch data for all stocks
-        all_data = self.fetch_all_daily_data(max_workers=4)  # We can use more workers with NSE-Python
+        all_data = self.fetch_all_daily_data(max_workers=4)
         
         # Check if we got any data
         if not all_data:
@@ -787,8 +659,9 @@ def start_web_server():
     httpd.serve_forever()
 
 
-def main():
-    """Main function to run both analysis and web server."""
+# KEY CHANGE: Immediately start web server, THEN run analysis
+def run_scheduled_tasks():
+    """Run the bot's periodic tasks."""
     # Initialize data manager
     data_manager = StockDataManager()
     
@@ -805,12 +678,6 @@ def main():
     for rec in opportunities['sell']:
         print(f"{rec['symbol']}: Current = ₹{rec['current_price']:.2f}, Target = ₹{rec['target_price']:.2f} " +
               f"(-{rec['potential_loss_pct']:.2f}%), RSI = {rec['rsi']:.2f}, Change = {rec['price_change']:.2f}%")
-    
-    # Start the web server in a separate thread
-    import threading
-    server_thread = threading.Thread(target=start_web_server)
-    server_thread.daemon = True
-    server_thread.start()
     
     # Set up scheduled analysis runs (every 6 hours)
     import sched
@@ -839,8 +706,31 @@ def main():
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     except Exception as e:
-        logger.error(f"Error in main thread: {e}")
+        logger.error(f"Error in scheduler thread: {e}")
 
 
 if __name__ == "__main__":
-    main()
+    # Start the web server in a separate thread
+    logger.info("Starting NSE Trading Bot...")
+    
+    # Create and start the web server thread
+    web_server_thread = threading.Thread(target=start_web_server, daemon=True)
+    web_server_thread.start()
+    logger.info("Web server thread started")
+    
+    # Now run the scheduled tasks in the main thread
+    try:
+        # Run the analysis tasks
+        run_scheduled_tasks()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error(f"Error in main thread: {e}")
+        
+    # Keep the main thread alive even if scheduled tasks finish
+    # This ensures the web server continues to run
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
