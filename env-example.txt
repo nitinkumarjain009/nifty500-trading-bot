@@ -1,0 +1,9 @@
+# Telegram Configuration
+TELEGRAM_TOKEN=8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU
+TELEGRAM_CHAT_ID=711856868
+
+# WhatsApp Configuration
+WHATSAPP_NUMBER=+918376906697
+WHATSAPP_API_URL=https://api.whatsapp.com/send
+
+# Add any additional configuration variables here

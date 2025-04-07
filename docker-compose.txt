@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: nifty500-trading-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=8017759392:AAEwM-W-y83lLXTjlPl8sC_aBmizuIrFXnU
+      - TELEGRAM_CHAT_ID=711856868
+      - WHATSAPP_NUMBER=+918376906697
+    volumes:
+      - ./logs:/app/logs
