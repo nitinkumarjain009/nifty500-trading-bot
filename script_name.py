@@ -28,6 +28,42 @@ NIFTY50_STOCKS = [
     "TITAN", "UPL", "ULTRACEMCO", "WIPRO", "YESBANK"
 ]
 
+def get_api_key_from_secrets():
+    """Get API key from secrets file."""
+    # Try .env file format
+    try:
+        with open('.env', 'r') as f:
+            for line in f:
+                if line.strip().startswith('ALPHA_VANTAGE_API_KEY='):
+                    return line.strip().split('=', 1)[1].strip().strip('"\'')
+    except FileNotFoundError:
+        pass
+    
+    # Try JSON format (.secrets file)
+    try:
+        with open('.secrets', 'r') as f:
+            secrets = json.load(f)
+            return secrets.get('ALPHA_VANTAGE_API_KEY')
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    
+    # Try simple key file (just contains the key)
+    try:
+        with open('alphavantage.key', 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        pass
+        
+    # Try secrets directory
+    try:
+        with open('secrets/alphavantage.key', 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        pass
+    
+    logger.error("Could not find Alpha Vantage API key in any secrets file")
+    return None
+
 class AlphaVantageDataSource:
     def __init__(self, api_key=None):
         """Initialize Alpha Vantage API client."""
@@ -479,10 +515,15 @@ class Nifty50DataManager:
 
 def main():
     """Example usage of the Nifty50DataManager class."""
-    # Get API key from environment variable
-    api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+    # Try to get API key from secrets or environment variable
+    api_key = get_api_key_from_secrets() or os.getenv('ALPHA_VANTAGE_API_KEY')
+    
     if not api_key:
-        logger.error("ALPHA_VANTAGE_API_KEY environment variable not set")
+        # Prompt user for API key if not found
+        api_key = input("Please enter your Alpha Vantage API key: ")
+    
+    if not api_key:
+        logger.error("Alpha Vantage API key not provided")
         return
     
     # Initialize data manager
