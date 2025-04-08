@@ -21,16 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NSEANALYZER")
 
-# Create Flask app at the beginning
-try:
-    from flask import Flask, jsonify
-    app = Flask(__name__)
-    logger.info("Flask app created successfully")
-except Exception as e:
-    logger.error(f"Failed to create Flask app: {e}")
-    sys.exit(1)
-
-# Function to install required packages
+# Function to install required packages - Only for local development
 def install_required_packages():
     required_packages = [
         'pandas', 'numpy', 'requests', 'nsepy', 'nsetools', 
@@ -54,11 +45,11 @@ def install_required_packages():
             except Exception as e:
                 logger.error(f"Failed to install {package}: {e}")
     
-    # Explicitly return after installation
     logger.info("All required packages installation check completed.")
 
-# Install required packages
-install_required_packages()
+# Only try to install packages in development environment
+if os.environ.get("ENVIRONMENT") != "production":
+    install_required_packages()
 
 # Now import the installed packages
 try:
@@ -67,34 +58,25 @@ try:
     import requests
     import schedule
     from tabulate import tabulate
+    from flask import Flask, jsonify
     
     # Import NSE related packages
-    # We'll try/except each one as they can sometimes be problematic
     try:
         from nsepy import get_history
-    except ImportError:
-        logger.error("Failed to import nsepy. Trying alternative installation.")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "nsepy"])
-        from nsepy import get_history
-    
-    try:
         from nsetools import Nse
-    except ImportError:
-        logger.error("Failed to import nsetools. Trying alternative installation.")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "nsetools"])
-        from nsetools import Nse
-    
-    try:
         import telegram
-    except ImportError:
-        logger.error("Failed to import python-telegram-bot. Trying specific version.")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "python-telegram-bot==13.7"])
-        import telegram
+    except ImportError as e:
+        logger.error(f"Failed to import specific package: {e}")
+        # Still allow the app to start and provide appropriate error messages later
     
     logger.info("All packages imported successfully.")
 except Exception as e:
     logger.error(f"Failed to import required packages: {e}")
     sys.exit(1)
+
+# Create Flask app after imports
+app = Flask(__name__)
+logger.info("Flask app created successfully")
 
 # Telegram Bot Configuration
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
