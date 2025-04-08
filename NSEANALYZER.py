@@ -441,6 +441,8 @@ class StockAnalyzer:
 # Flask routes
 @app.route('/')
 def index():
+    last_update_value = latest_results.get("last_update") or "Not yet run"
+    
     return """
     <html>
         <head>
@@ -462,7 +464,7 @@ def index():
                 <h1>NSE Stock Analyzer</h1>
                 <div class="status">
                     <p><strong>Status:</strong> Running</p>
-                    <p><strong>Last Update:</strong> {last_update}</p>
+                    <p><strong>Last Update:</strong> """ + last_update_value + """</p>
                 </div>
                 <div class="links">
                     <a href="/api/analyze">Run Analysis Now</a>
@@ -476,7 +478,7 @@ def index():
             </div>
         </body>
     </html>
-    """.format(last_update=latest_results["last_update"] or "Not yet run")
+    """
 
 @app.route('/api/analyze')
 def trigger_analysis():
