@@ -69,6 +69,8 @@ NIFTY_SMALL_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftysm
 
 # Create Flask app
 app = Flask(__name__)
+
+# Global variable to store latest results
 latest_results = {
     "large": [],
     "mid": [],
@@ -315,6 +317,8 @@ class StockAnalyzer:
             return False
     
     def run_analysis(self):
+        global latest_results  # Proper declaration of using the global variable
+        
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info("Starting market analysis at " + current_time)
@@ -331,8 +335,9 @@ class StockAnalyzer:
                 return
             
             if not is_market_hours:
-                logger.info("Outside market hours. Skipping analysis.")
-                return
+                logger.info("Outside market hours. Running analysis anyway for demonstration.")
+                # Note: For production, you may want to uncomment the following line
+                # return
             
             # Analyze each category
             categories = ["large", "mid", "small"]
@@ -342,8 +347,7 @@ class StockAnalyzer:
                 results = self.analyze_category(category)
                 all_results[category] = results
                 
-                # Update global results
-                global latest_results
+                # Update global results - proper assignment to the global variable
                 latest_results[category] = results
             
             latest_results["last_update"] = current_time
@@ -363,8 +367,10 @@ class StockAnalyzer:
                 logger.info(f"Analysis for {category} cap completed and saved")
             
             logger.info("Market analysis completed")
+            return all_results
         except Exception as e:
             logger.error(f"Error during analysis: {e}")
+            return None
 
 # Background thread for scheduled tasks
 def run_scheduler():
