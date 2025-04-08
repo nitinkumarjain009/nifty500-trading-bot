@@ -3,7 +3,6 @@ import os
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import talib
 import pytz
 import datetime
 import requests
@@ -15,6 +14,16 @@ import base64
 from matplotlib.figure import Figure
 import warnings
 warnings.filterwarnings('ignore')
+
+# Try to import talib, but fall back to pandas_ta if not available
+try:
+    import talib
+    USING_TALIB = True
+    print("Successfully imported TA-Lib")
+except ImportError:
+    print("TA-Lib not available, falling back to pandas_ta")
+    import pandas_ta as ta
+    USING_TALIB = False
 
 app = Flask(__name__)
 
@@ -69,7 +78,11 @@ def calculate_rsi(data):
         return None
     
     # Calculate RSI
-    data['RSI'] = talib.RSI(data['Close'], timeperiod=14)
+    if USING_TALIB:
+        data['RSI'] = talib.RSI(data['Close'], timeperiod=14)
+    else:
+        # Fallback to pandas_ta if talib is not available
+        data['RSI'] = ta.rsi(data['Close'], length=14)
     
     return data
 
@@ -696,31 +709,91 @@ with open('templates/index.html', 'w') as f:
                     updateTable('small-cap-table', results.small_cap);
                     
                     updateTopPicks(results);
-                    checkMarketHours(); // Update the after-hours section
-                    
+                    checkMarketHours(); //
+                    // Continuing from the existing JavaScript in index.html
+                    document.getElementById('timestamp').innerHTML = `Last updated: ${data.last_updated}`;
                     document.getElementById('large-loading').style.display = 'none';
                     document.getElementById('mid-loading').style.display = 'none';
                     document.getElementById('small-loading').style.display = 'none';
                     document.getElementById('top-buys-loading').style.display = 'none';
                     document.getElementById('top-sells-loading').style.display = 'none';
-                    
-                    // Update timestamp
-                    if (data.last_updated) {
-                        document.getElementById('timestamp').textContent = 
-                            `Last updated: ${data.last_updated} IST`;
-                    } else {
-                        document.getElementById('timestamp').textContent = 
-                            `Last updated: Just now`;
-                    }
                 })
                 .catch(error => {
-                    console.error('Error:', error);
-                    document.getElementById('large-loading').textContent = 'Error loading data';
-                    document.getElementById('mid-loading').textContent = 'Error loading data';
-                    document.getElementById('small-loading').textContent = 'Error loading data';
-                    document.getElementById('top-buys-loading').textContent = 'Error loading data';
-                    document.getElementById('top-sells-loading').textContent = 'Error loading data';
+                    console.error('Error fetching stock data:', error);
+                    document.getElementById('large-loading').style.display = 'none';
+                    document.getElementById('mid-loading').style.display = 'none';
+                    document.getElementById('small-loading').style.display = 'none';
+                    document.getElementById('top-buys-loading').style.display = 'none';
+                    document.getElementById('top-sells-loading').style.display = 'none';
+                    alert('Error loading data. Please try again later.');
                 });
+        }
+        
+        function updateTable(tableId, data) {
+            const table = document.getElementById(tableId);
+            const tbody = table.querySelector('tbody');
+            tbody.innerHTML = '';
+            
+            data.forEach(stock => {
+                const row = document.createElement('tr');
+                
+                // Create symbol cell
+                const symbolCell = document.createElement('td');
+                symbolCell.textContent = stock.symbol.replace('.NS', '');
+                row.appendChild(symbolCell);
+                
+                // Create price cell
+                const priceCell = document.createElement('td');
+                priceCell.textContent = stock.price;
+                row.appendChild(priceCell);
+                
+                // Create change percentage cell
+                const changeCell = document.createElement('td');
+                changeCell.textContent = stock.change_pct + '%';
+                if (stock.change_pct > 0) {
+                    changeCell.classList.add('positive-change');
+                    changeCell.textContent = '+' + changeCell.textContent;
+                } else if (stock.change_pct < 0) {
+                    changeCell.classList.add('negative-change');
+                }
+                row.appendChild(changeCell);
+                
+                // Create RSI cell
+                const rsiCell = document.createElement('td');
+                rsiCell.textContent = stock.rsi;
+                row.appendChild(rsiCell);
+                
+                // Create signal cell
+                const signalCell = document.createElement('td');
+                signalCell.textContent = stock.signal;
+                
+                if (stock.signal === 'Strong Buy') {
+                    signalCell.classList.add('strong-buy');
+                } else if (stock.signal === 'Buy') {
+                    signalCell.classList.add('buy');
+                } else if (stock.signal === 'Strong Sell') {
+                    signalCell.classList.add('strong-sell');
+                } else if (stock.signal === 'Sell') {
+                    signalCell.classList.add('sell');
+                } else {
+                    signalCell.classList.add('hold');
+                }
+                
+                row.appendChild(signalCell);
+                
+                // Create action button cell
+                const actionCell = document.createElement('td');
+                const viewButton = document.createElement('button');
+                viewButton.textContent = 'View Chart';
+                viewButton.classList.add('btn', 'btn-sm', 'btn-outline-primary');
+                viewButton.onclick = function() {
+                    loadChart(stock.symbol);
+                };
+                actionCell.appendChild(viewButton);
+                row.appendChild(actionCell);
+                
+                tbody.appendChild(row);
+            });
         }
         
         function updateTopPicks(results) {
@@ -729,140 +802,76 @@ with open('templates/index.html', 'w') as f:
                 ...results.large_cap,
                 ...results.mid_cap,
                 ...results.small_cap
-            ].filter(item => item.signal !== "No Data");
+            ];
             
-            // Get top buy picks (Strong Buy first, then Buy)
-            let buyPicks = allStocks.filter(item => item.signal.includes("Buy"))
-                .sort((a, b) => {
-                    // Sort by signal strength first
-                    if (a.signal === "Strong Buy" && b.signal !== "Strong Buy") return -1;
-                    if (a.signal !== "Strong Buy" && b.signal === "Strong Buy") return 1;
-                    
-                    // Then by RSI (lower is better for buy)
-                    return a.rsi - b.rsi;
-                })
+            // Filter valid stocks
+            allStocks = allStocks.filter(stock => stock.signal !== 'No Data');
+            
+            // Get buy and sell recommendations
+            const buyPicks = allStocks.filter(stock => stock.signal.includes('Buy'))
+                .sort((a, b) => a.rsi - b.rsi)  // Sort by RSI (lowest first for buy)
                 .slice(0, 5);
                 
-            // Get top sell picks (Strong Sell first, then Sell)
-            let sellPicks = allStocks.filter(item => item.signal.includes("Sell"))
-                .sort((a, b) => {
-                    // Sort by signal strength first
-                    if (a.signal === "Strong Sell" && b.signal !== "Strong Sell") return -1;
-                    if (a.signal !== "Strong Sell" && b.signal === "Strong Sell") return 1;
-                    
-                    // Then by RSI (higher is better for sell)
-                    return b.rsi - a.rsi;
-                })
+            const sellPicks = allStocks.filter(stock => stock.signal.includes('Sell'))
+                .sort((a, b) => b.rsi - a.rsi)  // Sort by RSI (highest first for sell)
                 .slice(0, 5);
-                
-            updatePicksTable('top-buys-table', buyPicks);
-            updatePicksTable('top-sells-table', sellPicks);
+            
+            // Update tables
+            updateTopTable('top-buys-table', buyPicks);
+            updateTopTable('top-sells-table', sellPicks);
         }
         
-        function updatePicksTable(tableId, data) {
-            const tbody = document.querySelector(`#${tableId} tbody`);
+        function updateTopTable(tableId, data) {
+            const table = document.getElementById(tableId);
+            const tbody = table.querySelector('tbody');
             tbody.innerHTML = '';
             
             if (data.length === 0) {
                 const row = document.createElement('tr');
                 const cell = document.createElement('td');
                 cell.colSpan = 4;
-                cell.textContent = 'No recommendations available';
+                cell.textContent = 'No recommendations found';
                 cell.style.textAlign = 'center';
                 row.appendChild(cell);
                 tbody.appendChild(row);
                 return;
             }
             
-            data.forEach(item => {
+            data.forEach(stock => {
                 const row = document.createElement('tr');
                 
-                const symbol = document.createElement('td');
-                symbol.textContent = item.symbol.replace('.NS', '');
-                symbol.style.fontWeight = 'bold';
-                row.appendChild(symbol);
+                // Symbol cell
+                const symbolCell = document.createElement('td');
+                symbolCell.innerHTML = `<a href="#" onclick="loadChart('${stock.symbol}'); return false;">${stock.symbol.replace('.NS', '')}</a>`;
+                row.appendChild(symbolCell);
                 
-                const price = document.createElement('td');
-                price.textContent = '₹' + item.price;
-                row.appendChild(price);
+                // Price cell
+                const priceCell = document.createElement('td');
+                priceCell.textContent = stock.price;
+                row.appendChild(priceCell);
                 
-                const rsi = document.createElement('td');
-                rsi.textContent = item.rsi;
-                row.appendChild(rsi);
+                // RSI cell
+                const rsiCell = document.createElement('td');
+                rsiCell.textContent = stock.rsi;
+                row.appendChild(rsiCell);
                 
-                const signal = document.createElement('td');
-                signal.textContent = item.signal;
-                if (item.signal === 'Strong Buy') {
-                    signal.className = 'strong-buy';
-                } else if (item.signal === 'Buy') {
-                    signal.className = 'buy';
-                } else if (item.signal === 'Strong Sell') {
-                    signal.className = 'strong-sell';
-                } else if (item.signal === 'Sell') {
-                    signal.className = 'sell';
+                // Signal cell
+                const signalCell = document.createElement('td');
+                signalCell.textContent = stock.signal;
+                
+                if (stock.signal === 'Strong Buy') {
+                    signalCell.classList.add('strong-buy');
+                } else if (stock.signal === 'Buy') {
+                    signalCell.classList.add('buy');
+                } else if (stock.signal === 'Strong Sell') {
+                    signalCell.classList.add('strong-sell');
+                } else if (stock.signal === 'Sell') {
+                    signalCell.classList.add('sell');
                 } else {
-                    signal.className = 'hold';
+                    signalCell.classList.add('hold');
                 }
-                row.appendChild(signal);
                 
-                tbody.appendChild(row);
-            });
-        }
-        
-        function updateTable(tableId, data) {
-            const tbody = document.querySelector(`#${tableId} tbody`);
-            tbody.innerHTML = '';
-            
-            data.forEach(item => {
-                const row = document.createElement('tr');
-                
-                const symbol = document.createElement('td');
-                symbol.textContent = item.symbol.replace('.NS', '');
-                symbol.style.fontWeight = 'bold';
-                row.appendChild(symbol);
-                
-                const price = document.createElement('td');
-                price.textContent = '₹' + item.price;
-                row.appendChild(price);
-                
-                const change = document.createElement('td');
-                if (item.change_pct > 0) {
-                    change.textContent = '+' + item.change_pct + '%';
-                    change.className = 'positive-change';
-                } else {
-                    change.textContent = item.change_pct + '%';
-                    change.className = 'negative-change';
-                }
-                row.appendChild(change);
-                
-                const rsi = document.createElement('td');
-                rsi.textContent = item.rsi;
-                row.appendChild(rsi);
-                
-                const signal = document.createElement('td');
-                signal.textContent = item.signal;
-                if (item.signal === 'Strong Buy') {
-                    signal.className = 'strong-buy';
-                } else if (item.signal === 'Buy') {
-                    signal.className = 'buy';
-                } else if (item.signal === 'Strong Sell') {
-                    signal.className = 'strong-sell';
-                } else if (item.signal === 'Sell') {
-                    signal.className = 'sell';
-                } else {
-                    signal.className = 'hold';
-                }
-                row.appendChild(signal);
-                
-                const action = document.createElement('td');
-                const viewBtn = document.createElement('button');
-                viewBtn.className = 'btn btn-sm btn-outline-primary';
-                viewBtn.textContent = 'View Chart';
-                viewBtn.onclick = function() {
-                    loadChart(item.symbol);
-                };
-                action.appendChild(viewBtn);
-                row.appendChild(action);
+                row.appendChild(signalCell);
                 
                 tbody.appendChild(row);
             });
@@ -875,55 +884,44 @@ with open('templates/index.html', 'w') as f:
             fetch(`/chart/${symbol}`)
                 .then(response => response.json())
                 .then(data => {
-                    if (data.image) {
-                        const title = document.createElement('h4');
-                        title.textContent = symbol.replace('.NS', '') + ' - Technical Analysis';
-                        
-                        const img = document.createElement('img');
-                        img.src = 'data:image/png;base64,' + data.image;
-                        img.className = 'img-fluid';
-                        img.alt = symbol + ' chart';
-                        
-                        const container = document.getElementById('chart');
-                        container.appendChild(title);
-                        container.appendChild(img);
-                        
-                        document.getElementById('chart-loading').style.display = 'none';
+                    if (data.error) {
+                        document.getElementById('chart').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
                     } else {
-                        document.getElementById('chart').innerHTML = '<div class="alert alert-danger">Failed to load chart</div>';
-                        document.getElementById('chart-loading').style.display = 'none';
+                        document.getElementById('chart').innerHTML = `
+                            <h4>${symbol.replace('.NS', '')} - Technical Analysis</h4>
+                            <img src="data:image/png;base64,${data.image}" class="img-fluid" alt="Chart">
+                            <div class="mt-3">
+                                <h5>Trading Strategy:</h5>
+                                <p>This chart shows price movement, RSI indicator, and volume analysis for ${symbol.replace('.NS', '')}.</p>
+                                <ul>
+                                    <li><strong>RSI above 70</strong>: Indicates potential overbought conditions, consider selling.</li>
+                                    <li><strong>RSI below 30</strong>: Indicates potential oversold conditions, consider buying.</li>
+                                    <li><strong>Moving Averages</strong>: Price crossing above MA could indicate bullish trend, while crossing below may signal bearish trend.</li>
+                                    <li><strong>Volume</strong>: High volume confirms the strength of price movements.</li>
+                                </ul>
+                            </div>
+                        `;
                     }
+                    document.getElementById('chart-loading').style.display = 'none';
                 })
                 .catch(error => {
-                    console.error('Error:', error);
-                    document.getElementById('chart').innerHTML = '<div class="alert alert-danger">Error loading chart</div>';
+                    console.error('Error loading chart:', error);
+                    document.getElementById('chart').innerHTML = '<div class="alert alert-danger">Failed to load chart. Please try again later.</div>';
                     document.getElementById('chart-loading').style.display = 'none';
                 });
         }
     </script>
-    
-    <footer class="mt-4 text-center">
-        <p><small>NSE Stock Analyzer - After Hours Edition</small></p>
-        <p><small>For detailed analysis: <a href="https://nifty500-trading-bot.onrender.com/" target="_blank">https://nifty500-trading-bot.onrender.com/</a></small></p>
-    </footer>
 </body>
 </html>
 ''')
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Start the scheduler
-    scheduler.start()
-    
-    # Display startup message
-    print("NSE Stock Analyzer - After Hours Edition")
-    print("Server starting...")
-    print("View the dashboard at http://localhost:5000")
-    print("For detailed analysis: https://nifty500-trading-bot.onrender.com/")
-    
     try:
-        # Run the Flask app
-        app.run(debug=True, use_reloader=False)
-    except KeyboardInterrupt:
-        # Shutdown the scheduler when app is stopped
-        scheduler.shutdown()
-        print("Server stopped")
+        scheduler.start()
+        print("Scheduler started successfully!")
+    except Exception as e:
+        print(f"Error starting scheduler: {e}")
+    
+    # Run the Flask app
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
