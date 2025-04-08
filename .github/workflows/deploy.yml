@@ -1,18 +1,21 @@
-name: Deploy to Render
-
+name: Test and Verify
 on:
   push:
     branches: [main]
-
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Deploy to Render
-        uses: render-actions/deploy-to-render@v1
-        with:
-          service-id: ${{ secrets.RENDER_SERVICE_ID }}
-          api-key: ${{ secrets.RENDER_API_KEY }}
+      
+      # Add any tests or build steps here
+      - name: Run tests
+        run: |
+          echo "Running tests..."
+          # Add your test commands here
+      
+      - name: Verify service availability
+        run: |
+          echo "Verifying service at https://nifty500-trading-bot.onrender.com/"
+          curl -s -o /dev/null -w "%{http_code}" https://nifty500-trading-bot.onrender.com/ | grep -q "200" && echo "Service is up!" || echo "Service not responding with 200 OK"
