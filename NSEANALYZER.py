@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# NSE Stock Analyzer with Supertrend, RSI and Telegram Notifications
+# NSE Stock Analyzer with Supertrend, RSI, Telegram Notifications and Web Service
 
 import subprocess
 import sys
@@ -11,6 +11,8 @@ import requests
 from datetime import datetime
 import schedule
 import logging
+import threading
+from flask import Flask, jsonify
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 def install_required_packages():
     required_packages = [
         'pandas', 'numpy', 'requests', 'nsepy', 'nsetools', 
-        'schedule', 'python-telegram-bot', 'tabulate'
+        'schedule', 'python-telegram-bot', 'tabulate', 'flask'
     ]
     
     logger.info("Checking and installing required packages...")
@@ -50,8 +52,8 @@ from tabulate import tabulate
 import telegram
 
 # Telegram Bot Configuration
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 # Technical Analysis Parameters
 SUPERTREND_PERIOD = 10
@@ -64,6 +66,15 @@ RSI_OVERSOLD = 30
 NIFTY_LARGE_CAP_URL = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
 NIFTY_MID_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv"
 NIFTY_SMALL_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
+
+# Create Flask app
+app = Flask(__name__)
+latest_results = {
+    "large": [],
+    "mid": [],
+    "small": [],
+    "last_update": None
+}
 
 class StockAnalyzer:
     def __init__(self):
@@ -330,6 +341,12 @@ class StockAnalyzer:
             for category in categories:
                 results = self.analyze_category(category)
                 all_results[category] = results
+                
+                # Update global results
+                global latest_results
+                latest_results[category] = results
+            
+            latest_results["last_update"] = current_time
             
             # Format and send reports
             for category, results in all_results.items():
@@ -349,7 +366,8 @@ class StockAnalyzer:
         except Exception as e:
             logger.error(f"Error during analysis: {e}")
 
-def main():
+# Background thread for scheduled tasks
+def run_scheduler():
     analyzer = StockAnalyzer()
     
     # Run once at startup
@@ -369,10 +387,74 @@ def main():
     
     logger.info("Scheduler has been set up. The script will run during market hours.")
     
-    # Keep the script running
+    # Keep the scheduler running
     while True:
         schedule.run_pending()
         time.sleep(60)
+
+# Flask routes
+@app.route('/')
+def index():
+    return """
+    <html>
+        <head>
+            <title>NSE Stock Analyzer</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                h1 { color: #333; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .links { margin: 20px 0; }
+                .links a { display: inline-block; margin-right: 15px; padding: 10px; 
+                           background-color: #0066cc; color: white; text-decoration: none; 
+                           border-radius: 5px; }
+                .status { margin: 20px 0; padding: 15px; background-color: #f0f0f0; 
+                         border-radius: 5px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>NSE Stock Analyzer</h1>
+                <div class="status">
+                    <p><strong>Status:</strong> Running</p>
+                    <p><strong>Last Update:</strong> {last_update}</p>
+                </div>
+                <div class="links">
+                    <a href="/api/analyze">Run Analysis Now</a>
+                    <a href="/api/results">View Latest Results</a>
+                </div>
+                <div>
+                    <h2>About</h2>
+                    <p>This service analyzes NSE stocks using Supertrend and RSI indicators, 
+                    identifies potential buy/sell opportunities, and sends alerts to Telegram.</p>
+                </div>
+            </div>
+        </body>
+    </html>
+    """.format(last_update=latest_results["last_update"] or "Not yet run")
+
+@app.route('/api/analyze')
+def trigger_analysis():
+    analyzer = StockAnalyzer()
+    analyzer.run_analysis()
+    return jsonify({"status": "Analysis triggered", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+
+@app.route('/api/results')
+def get_results():
+    return jsonify(latest_results)
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy"})
+
+def main():
+    # Start the scheduler in a background thread
+    scheduler_thread = threading.Thread(target=run_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
+    
+    # Start the Flask app
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
