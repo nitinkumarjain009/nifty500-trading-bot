@@ -84,6 +84,10 @@ logger.info("Flask app created successfully")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
+# Define IST timezone
+IST = pytz.timezone('Asia/Kolkata')
+logger.info("Set timezone to IST (Asia/Kolkata)")
+
 # Technical Analysis Parameters
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3
