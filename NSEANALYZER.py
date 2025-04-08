@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 # NSE Stock Analyzer with Supertrend, RSI, Telegram Notifications and Web Service
+# Enhanced with Weekly/Monthly Analysis and HTML Tables
 
 import os
 import sys
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
 import threading
 import logging
 import concurrent.futures
 from functools import lru_cache
+import math
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +29,7 @@ logger = logging.getLogger("NSEANALYZER")
 def install_required_packages():
     required_packages = [
         'pandas', 'numpy', 'requests', 'nsepy', 'nsetools', 
-        'schedule', 'python-telegram-bot==13.7', 'tabulate', 'flask'
+        'schedule', 'python-telegram-bot==13.7', 'tabulate', 'flask', 'pytz'
     ]
     
     logger.info("Checking and installing required packages...")
@@ -59,8 +61,9 @@ try:
     import numpy as np
     import requests
     import schedule
+    import pytz
     from tabulate import tabulate
-    from flask import Flask, jsonify
+    from flask import Flask, jsonify, render_template_string, request
     
     # Import NSE related packages
     try:
@@ -80,18 +83,20 @@ except Exception as e:
 app = Flask(__name__)
 logger.info("Flask app created successfully")
 
-# Telegram Bot Configuration
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
-
 # Define IST timezone
 IST = pytz.timezone('Asia/Kolkata')
 logger.info("Set timezone to IST (Asia/Kolkata)")
+
+# Telegram Bot Configuration
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 # Technical Analysis Parameters
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3
 RSI_PERIOD = 14
+RSI_PERIOD_WEEKLY = 14
+RSI_PERIOD_MONTHLY = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 
@@ -111,6 +116,8 @@ latest_results = {
     "large": [],
     "mid": [],
     "small": [],
+    "weekly": [],     # For weekly analysis
+    "monthly": [],    # For monthly analysis
     "last_update": None,
     "next_update": None,
     "status": "idle"
@@ -118,6 +125,70 @@ latest_results = {
 
 # Global lock for accessing latest_results
 results_lock = threading.Lock()
+
+# Helper function to get current time in IST
+def get_ist_time():
+    return datetime.now(IST)
+
+# Function to generate HTML table from results
+def generate_html_table(results, title, filter_type=None):
+    if not results:
+        return f"<div class='no-data'><p>No {title} data available</p></div>"
+    
+    # Get current timestamp in IST
+    current_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Filter results based on filter_type if specified
+    filtered_results = results
+    if filter_type:
+        if filter_type == "buy":
+            filtered_results = [r for r in results if r['Signal'] in ["BUY", "STRONG BUY", "OVERSOLD"]]
+        elif filter_type == "sell":
+            filtered_results = [r for r in results if r['Signal'] in ["SELL", "STRONG SELL", "OVERBOUGHT"]]
+    
+    if not filtered_results:
+        return f"<div class='no-data'><p>No {title} signals matching the filter</p></div>"
+    
+    # Define CSS classes for signals
+    signal_classes = {
+        "BUY": "buy",
+        "STRONG BUY": "strong-buy",
+        "SELL": "sell",
+        "STRONG SELL": "strong-sell",
+        "OVERSOLD": "oversold",
+        "OVERBOUGHT": "overbought",
+        "NEUTRAL": "neutral"
+    }
+    
+    # Generate HTML table with timestamp
+    html = f"<div class='table-responsive'>"
+    html += f"<div class='timestamp-info'>Last Updated: {current_time} (IST)</div>"
+    html += f"<table class='stock-table'>"
+    html += "<thead><tr>"
+    
+    # Extract all keys from first result for headers
+    headers = filtered_results[0].keys()
+    for header in headers:
+        html += f"<th>{header}</th>"
+    
+    html += "</tr></thead><tbody>"
+    
+    for result in filtered_results:
+        signal = result.get('Signal', 'NEUTRAL')
+        html += f"<tr class='{signal_classes.get(signal, 'neutral')}'>"
+        
+        for key, value in result.items():
+            if key == 'Signal':
+                html += f"<td class='signal {signal_classes.get(value, 'neutral')}'>{value}</td>"
+            elif isinstance(value, (int, float)):
+                html += f"<td class='number'>{value}</td>"
+            else:
+                html += f"<td>{value}</td>"
+        
+        html += "</tr>"
+    
+    html += "</tbody></table></div>"
+    return html
 
 class StockAnalyzer:
     def __init__(self):
@@ -131,6 +202,8 @@ class StockAnalyzer:
         self.bot = self.setup_telegram_bot()
         self.data_cache = {}
         self.last_cache_time = {}
+        self.weekly_cache = {}
+        self.monthly_cache = {}
     
     def setup_telegram_bot(self):
         try:
@@ -167,15 +240,28 @@ class StockAnalyzer:
             else:
                 return ["AHLUCONT", "AJOONI", "AKSHARCHEM", "ASTEC", "AXITA"]
     
-    def get_stock_data(self, symbol, days=100):
+    def get_stock_data(self, symbol, days=100, timeframe="daily"):
         current_time = time.time()
+        cache_key = f"{symbol}_{timeframe}"
         
         # Check if we have a cached version
-        if symbol in self.data_cache and current_time - self.last_cache_time.get(symbol, 0) < CACHE_TIMEOUT:
+        if timeframe == "daily" and symbol in self.data_cache and current_time - self.last_cache_time.get(symbol, 0) < CACHE_TIMEOUT:
             return self.data_cache[symbol]
+        elif timeframe == "weekly" and cache_key in self.weekly_cache and current_time - self.last_cache_time.get(cache_key, 0) < CACHE_TIMEOUT:
+            return self.weekly_cache[cache_key]
+        elif timeframe == "monthly" and cache_key in self.monthly_cache and current_time - self.last_cache_time.get(cache_key, 0) < CACHE_TIMEOUT:
+            return self.monthly_cache[cache_key]
         
         try:
-            end_date = datetime.now().date()
+            # Use IST timezone for start and end dates
+            end_date = get_ist_time().date()
+            
+            # Adjust days based on timeframe to ensure enough data
+            if timeframe == "weekly":
+                days = days * 7  # Ensure enough daily data to create weekly data
+            elif timeframe == "monthly":
+                days = days * 30  # Ensure enough daily data to create monthly data
+                
             start_date = end_date - pd.Timedelta(days=days)
             
             # Try to get data with retry logic
@@ -184,21 +270,79 @@ class StockAnalyzer:
                 try:
                     data = get_history(symbol=symbol, start=start_date, end=end_date)
                     if not data.empty:
-                        logger.info(f"Successfully fetched data for {symbol}")
-                        # Cache the result
-                        self.data_cache[symbol] = data
-                        self.last_cache_time[symbol] = current_time
+                        logger.info(f"Successfully fetched {timeframe} data for {symbol}")
+                        
+                        # Convert to weekly or monthly data if needed
+                        if timeframe == "weekly":
+                            data = self.convert_to_weekly(data)
+                            self.weekly_cache[cache_key] = data
+                        elif timeframe == "monthly":
+                            data = self.convert_to_monthly(data)
+                            self.monthly_cache[cache_key] = data
+                        else:
+                            # Cache the daily data
+                            self.data_cache[symbol] = data
+                            
+                        self.last_cache_time[cache_key if timeframe != "daily" else symbol] = current_time
                         return data
                     else:
-                        logger.warning(f"Empty data returned for {symbol}, attempt {attempt+1}/{retries}")
+                        logger.warning(f"Empty data returned for {symbol} ({timeframe}), attempt {attempt+1}/{retries}")
                 except Exception as inner_e:
-                    logger.warning(f"Attempt {attempt+1}/{retries} failed for {symbol}: {inner_e}")
+                    logger.warning(f"Attempt {attempt+1}/{retries} failed for {symbol} ({timeframe}): {inner_e}")
                     time.sleep(1)  # Reduced wait time before retry
             
-            logger.error(f"Failed to fetch data for {symbol} after {retries} attempts")
+            logger.error(f"Failed to fetch {timeframe} data for {symbol} after {retries} attempts")
             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"Error in get_stock_data for {symbol}: {e}")
+            logger.error(f"Error in get_stock_data for {symbol} ({timeframe}): {e}")
+            return pd.DataFrame()
+    
+    def convert_to_weekly(self, daily_data):
+        """Convert daily data to weekly timeframe"""
+        try:
+            if daily_data.empty:
+                return pd.DataFrame()
+                
+            # Ensure the index is a datetime
+            if not isinstance(daily_data.index, pd.DatetimeIndex):
+                daily_data.index = pd.to_datetime(daily_data.index)
+            
+            # Group by year and week number
+            weekly_data = daily_data.resample('W').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            })
+            
+            return weekly_data
+        except Exception as e:
+            logger.error(f"Error converting to weekly data: {e}")
+            return pd.DataFrame()
+    
+    def convert_to_monthly(self, daily_data):
+        """Convert daily data to monthly timeframe"""
+        try:
+            if daily_data.empty:
+                return pd.DataFrame()
+                
+            # Ensure the index is a datetime
+            if not isinstance(daily_data.index, pd.DatetimeIndex):
+                daily_data.index = pd.to_datetime(daily_data.index)
+            
+            # Group by year and month
+            monthly_data = daily_data.resample('M').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            })
+            
+            return monthly_data
+        except Exception as e:
+            logger.error(f"Error converting to monthly data: {e}")
             return pd.DataFrame()
     
     def calculate_atr(self, high, low, close, period=14):
@@ -305,21 +449,29 @@ class StockAnalyzer:
             df['RSI'] = 50  # Neutral RSI value
             return df
     
-    def analyze_stock(self, symbol):
+    def analyze_stock(self, symbol, timeframe="daily"):
         try:
-            # Get stock data
-            data = self.get_stock_data(symbol)
+            # Get stock data for the specified timeframe
+            data = self.get_stock_data(symbol, days=100 if timeframe == "daily" else 200, timeframe=timeframe)
             
             if data.empty:
-                logger.warning(f"No data available for {symbol}")
+                logger.warning(f"No {timeframe} data available for {symbol}")
                 return None
             
             # Calculate indicators
             data = self.calculate_supertrend(data)
-            data = self.calculate_rsi(data)
+            
+            # Use appropriate RSI period based on timeframe
+            rsi_period = RSI_PERIOD
+            if timeframe == "weekly":
+                rsi_period = RSI_PERIOD_WEEKLY
+            elif timeframe == "monthly":
+                rsi_period = RSI_PERIOD_MONTHLY
+                
+            data = self.calculate_rsi(data, period=rsi_period)
             
             if len(data) < 2:
-                logger.warning(f"Insufficient data points for {symbol}")
+                logger.warning(f"Insufficient {timeframe} data points for {symbol}")
                 return None
             
             # Get last row for analysis
@@ -348,37 +500,46 @@ class StockAnalyzer:
             supertrend_value = last_row['Supertrend']
             rsi_value = last_row['RSI']
             
+            # Get timestamp for the analysis
+            timestamp = last_row.name
+            if isinstance(timestamp, pd.Timestamp):
+                date_str = timestamp.strftime('%Y-%m-%d')
+            else:
+                date_str = "N/A"
+            
             result = {
                 'Symbol': symbol,
+                'Date': date_str,
                 'Price': round(current_price, 2),
                 'Supertrend': round(supertrend_value, 2),
                 'RSI': round(rsi_value, 2),
-                'Signal': signal
+                'Signal': signal,
+                'Timeframe': timeframe.capitalize()
             }
             
             return result
         except Exception as e:
-            logger.error(f"Error analyzing {symbol}: {e}")
+            logger.error(f"Error analyzing {symbol} ({timeframe}): {e}")
             return None
     
-    def analyze_batch(self, symbols):
+    def analyze_batch(self, symbols, timeframe="daily"):
         """Analyze a batch of symbols"""
         results = []
         for symbol in symbols:
             try:
-                result = self.analyze_stock(symbol)
+                result = self.analyze_stock(symbol, timeframe)
                 if result:
                     results.append(result)
             except Exception as e:
-                logger.error(f"Error analyzing {symbol}: {e}")
+                logger.error(f"Error analyzing {symbol} ({timeframe}): {e}")
         return results
     
-    def analyze_category(self, category):
+    def analyze_category(self, category, timeframe="daily"):
         """Analyze a category using parallel processing"""
         stocks = self.fetch_stock_list(category)
         results = []
         
-        logger.info(f"Analyzing {len(stocks)} stocks from {category} cap category")
+        logger.info(f"Analyzing {len(stocks)} stocks from {category} cap category ({timeframe} timeframe)")
         
         # Process in batches with parallel execution
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -386,7 +547,7 @@ class StockAnalyzer:
             # Create batches to avoid overwhelming the API
             for i in range(0, len(stocks), BATCH_SIZE):
                 batch = stocks[i:i+BATCH_SIZE]
-                futures.append(executor.submit(self.analyze_batch, batch))
+                futures.append(executor.submit(self.analyze_batch, batch, timeframe))
             
             # Collect results
             for future in concurrent.futures.as_completed(futures):
@@ -394,7 +555,7 @@ class StockAnalyzer:
                 if batch_results:
                     results.extend(batch_results)
         
-        logger.info(f"Completed analysis for {category} cap with {len(results)} results")
+        logger.info(f"Completed analysis for {category} cap with {len(results)} results ({timeframe} timeframe)")
         return results
     
     def format_results_table(self, results):
@@ -462,22 +623,24 @@ class StockAnalyzer:
             with results_lock:
                 latest_results["status"] = "running"
             
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Use IST time for timestamps
+            current_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
             logger.info("Starting market analysis at " + current_time)
             
-            # Calculate next update time
-            next_update_time = datetime.now() + pd.Timedelta(minutes=ANALYSIS_INTERVAL)
+            # Calculate next update time in IST
+            next_update_time = get_ist_time() + timedelta(minutes=ANALYSIS_INTERVAL)
             next_update = next_update_time.strftime("%Y-%m-%d %H:%M:%S")
             
             # Analyze each category
             categories = ["large", "mid", "small"]
+            timeframes = ["daily", "weekly", "monthly"]
             all_results = {}
             
-            # Use ThreadPoolExecutor to analyze categories in parallel
+            # Analyze daily timeframe for each category
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(categories)) as executor:
-                futures = {executor.submit(self.analyze_category, category): category for category in categories}
-                for future in concurrent.futures.as_completed(futures):
-                    category = futures[future]
+                daily_futures = {executor.submit(self.analyze_category, category): category for category in categories}
+                for future in concurrent.futures.as_completed(daily_futures):
+                    category = daily_futures[future]
                     try:
                         results = future.result()
                         all_results[category] = results
@@ -486,19 +649,63 @@ class StockAnalyzer:
                         with results_lock:
                             latest_results[category] = results
                     except Exception as e:
-                        logger.error(f"Error analyzing {category} category: {e}")
+                        logger.error(f"Error analyzing {category} category (daily): {e}")
             
-            # Update status
+            # Analyze weekly data (combine all categories)
+            logger.info("Starting weekly timeframe analysis")
+            weekly_results = []
+            for category in categories:
+                try:
+                    category_stocks = self.fetch_stock_list(category)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        futures = []
+                        for i in range(0, len(category_stocks), BATCH_SIZE):
+                            batch = category_stocks[i:i+BATCH_SIZE]
+                            futures.append(executor.submit(self.analyze_batch, batch, "weekly"))
+                        
+                        for future in concurrent.futures.as_completed(futures):
+                            batch_results = future.result()
+                            if batch_results:
+                                weekly_results.extend(batch_results)
+                except Exception as e:
+                    logger.error(f"Error analyzing {category} category weekly data: {e}")
+            
+            # Update weekly results in global dictionary
             with results_lock:
+                latest_results["weekly"] = weekly_results
+            
+            # Analyze monthly data (combine all categories)
+            logger.info("Starting monthly timeframe analysis")
+            monthly_results = []
+            for category in categories:
+                try:
+                    category_stocks = self.fetch_stock_list(category)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        futures = []
+                        for i in range(0, len(category_stocks), BATCH_SIZE):
+                            batch = category_stocks[i:i+BATCH_SIZE]
+                            futures.append(executor.submit(self.analyze_batch, batch, "monthly"))
+                        
+                        for future in concurrent.futures.as_completed(futures):
+                            batch_results = future.result()
+                            if batch_results:
+                                monthly_results.extend(batch_results)
+                except Exception as e:
+                    logger.error(f"Error analyzing {category} category monthly data: {e}")
+            
+            # Update monthly results in global dictionary
+            with results_lock:
+                latest_results["monthly"] = monthly_results
                 latest_results["last_update"] = current_time
                 latest_results["next_update"] = next_update
                 latest_results["status"] = "idle"
             
-            # Format and send reports
+            # Format and send reports for each category and timeframe
+            # Daily reports by category
             for category, results in all_results.items():
-                message = f"📊 *NSE {category.upper()} CAP ANALYSIS* 📊\n"
-                message += f"*Date & Time:* {current_time}\n"
-                message += f"*Next Update:* {next_update}\n\n"
+                message = f"📊 *NSE {category.upper()} CAP ANALYSIS (DAILY)* 📊\n"
+                message += f"*Date & Time (IST):* {current_time}\n"
+                message += f"*Next Update (IST):* {next_update}\n\n"
                 message += self.format_results_table(results)
                 
                 self.send_telegram_message(message)
@@ -509,166 +716,14 @@ class StockAnalyzer:
                 
                 logger.info(f"Analysis for {category} cap completed and saved")
             
-            logger.info("Market analysis completed")
-            return all_results
-        except Exception as e:
-            logger.error(f"Error during analysis: {e}")
-            with results_lock:
-                latest_results["status"] = "error"
-            return None
-
-def is_market_hours():
-    """Check if current time is during market hours (9:15 AM to 3:30 PM, weekdays)"""
-    now = datetime.now()
-    # Check if it's a weekday (0 is Monday, 6 is Sunday)
-    if now.weekday() > 4:  # Saturday or Sunday
-        return False
-    
-    # Check if it's between 9:15 AM and 3:30 PM
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    
-    return market_open <= now <= market_close
-
-# Flask routes
-@app.route('/')
-def index():
-    with results_lock:
-        last_update_value = latest_results.get("last_update") or "Not yet run"
-        next_update_value = latest_results.get("next_update") or "Scheduled soon"
-        status = latest_results.get("status") or "idle"
-    
-    market_status = "OPEN" if is_market_hours() else "CLOSED"
-    
-    return f"""
-    <html>
-        <head>
-            <title>NSE Stock Analyzer</title>
-            <style>
-                body {{font-family: Arial, sans-serif; margin: 20px;}}
-                h1 {{color: #333;}}
-                .container {{max-width: 800px; margin: 0 auto;}}
-                .links {{margin: 20px 0;}}
-                .links a {{display: inline-block; margin-right: 15px; padding: 10px; 
-                         background-color: #0066cc; color: white; text-decoration: none; 
-                         border-radius: 5px;}}
-                .status {{margin: 20px 0; padding: 15px; background-color: #f0f0f0; 
-                        border-radius: 5px;}}
-                .market-open {{color: green; font-weight: bold;}}
-                .market-closed {{color: red; font-weight: bold;}}
-                .performance {{margin: 20px 0; background-color: #e8f5e9; padding: 15px;
-                             border-radius: 5px;}}
-                .running {{color: blue; font-weight: bold;}}
-                .idle {{color: green; font-weight: bold;}}
-                .error {{color: red; font-weight: bold;}}
-            </style>
-            <meta http-equiv="refresh" content="60">
-        </head>
-        <body>
-            <div class="container">
-                <h1>NSE Stock Analyzer</h1>
-                <div class="status">
-                    <p><strong>Status:</strong> <span class="{status}">{status.upper()}</span></p>
-                    <p><strong>Market:</strong> <span class="market-{market_status.lower()}">{market_status}</span></p>
-                    <p><strong>Last Update:</strong> {last_update_value}</p>
-                    <p><strong>Next Update:</strong> {next_update_value}</p>
-                </div>
-                <div class="performance">
-                    <p><strong>Performance:</strong> Optimized for speed with parallel processing</p>
-                    <p><strong>Workers:</strong> {MAX_WORKERS}</p>
-                    <p><strong>Analysis Interval:</strong> Every {ANALYSIS_INTERVAL} minutes during market hours</p>
-                </div>
-                <div class="links">
-                    <a href="/api/analyze">Run Analysis Now</a>
-                    <a href="/api/results">View Latest Results</a>
-                </div>
-                <div>
-                    <h2>About</h2>
-                    <p>This service analyzes NSE stocks using Supertrend and RSI indicators, 
-                    identifies potential buy/sell opportunities, and sends alerts to Telegram every {ANALYSIS_INTERVAL} minutes.</p>
-                </div>
-            </div>
-        </body>
-    </html>
-    """
-
-@app.route('/api/analyze')
-def trigger_analysis():
-    # Run analysis in a separate thread to avoid blocking the response
-    threading.Thread(target=lambda: StockAnalyzer().run_analysis()).start()
-    return jsonify({
-        "status": "Analysis triggered", 
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "message": "Analysis is running in background. Check results in a few minutes."
-    })
-
-@app.route('/api/results')
-def get_results():
-    with results_lock:
-        result_copy = dict(latest_results)
-    return jsonify(result_copy)
-
-@app.route('/health')
-def health_check():
-    return jsonify({"status": "healthy"})
-
-# Environment configuration endpoint
-@app.route('/api/config')
-def get_config():
-    return jsonify({
-        "MAX_WORKERS": MAX_WORKERS,
-        "BATCH_SIZE": BATCH_SIZE,
-        "CACHE_TIMEOUT": CACHE_TIMEOUT,
-        "ANALYSIS_INTERVAL": ANALYSIS_INTERVAL
-    })
-
-# Background thread for scheduled tasks
-def run_scheduler():
-    analyzer = StockAnalyzer()
-    
-    # Run once at startup
-    if is_market_hours():
-        analyzer.run_analysis()
-    
-    # Schedule runs - every 15 minutes during market hours (9:15 AM to 3:30 PM on weekdays)
-    for hour in range(9, 16):
-        for minute in [0, 15, 30, 45]:
-            # Skip times outside market hours (before 9:15 AM and after 3:30 PM)
-            if (hour == 9 and minute < 15) or (hour == 15 and minute > 30):
-                continue
+            # Weekly report
+            if weekly_results:
+                message = f"📊 *NSE WEEKLY TIMEFRAME ANALYSIS* 📊\n"
+                message += f"*Date & Time (IST):* {current_time}\n"
+                message += f"*Next Update (IST):* {next_update}\n\n"
+                message += self.format_results_table(weekly_results)
                 
-            # Schedule for each weekday
-            schedule.every().monday.at(f"{hour:02d}:{minute:02d}").do(
-                lambda: is_market_hours() and analyzer.run_analysis())
-            schedule.every().tuesday.at(f"{hour:02d}:{minute:02d}").do(
-                lambda: is_market_hours() and analyzer.run_analysis())
-            schedule.every().wednesday.at(f"{hour:02d}:{minute:02d}").do(
-                lambda: is_market_hours() and analyzer.run_analysis())
-            schedule.every().thursday.at(f"{hour:02d}:{minute:02d}").do(
-                lambda: is_market_hours() and analyzer.run_analysis())
-            schedule.every().friday.at(f"{hour:02d}:{minute:02d}").do(
-                lambda: is_market_hours() and analyzer.run_analysis())
-    
-    logger.info(f"Scheduler has been set up. The script will run every {ANALYSIS_INTERVAL} minutes during market hours.")
-    
-    # Keep the scheduler running
-    while True:
-        schedule.run_pending()
-        time.sleep(10)  # Check more frequently
-
-def main():
-    try:
-        # Start the scheduler in a background thread
-        scheduler_thread = threading.Thread(target=run_scheduler)
-        scheduler_thread.daemon = True
-        scheduler_thread.start()
-        
-        # Start the Flask app
-        port = int(os.environ.get("PORT", 8080))
-        app.run(host="0.0.0.0", port=port)
-    except Exception as e:
-        logger.error(f"Error in main function: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+                self.send_telegram_message(message)
+                
+                # Save to file
+                with open("
