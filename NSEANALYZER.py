@@ -726,4 +726,585 @@ class StockAnalyzer:
                 self.send_telegram_message(message)
                 
                 # Save to file
-                with open("
+                with open("weekly_analysis.txt", "w") as f:
+                    f.write(message)
+                
+                logger.info("Weekly analysis completed and saved")
+            
+            # Monthly report
+            if monthly_results:
+                message = f"📊 *NSE MONTHLY TIMEFRAME ANALYSIS* 📊\n"
+                message += f"*Date & Time (IST):* {current_time}\n"
+                message += f"*Next Update (IST):* {next_update}\n\n"
+                message += self.format_results_table(monthly_results)
+                
+                self.send_telegram_message(message)
+                
+                # Save to file
+                with open("monthly_analysis.txt", "w") as f:
+                    f.write(message)
+                
+                logger.info("Monthly analysis completed and saved")
+            
+            logger.info("All analysis completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in run_analysis: {e}")
+            # Update status in case of error
+            with results_lock:
+                latest_results["status"] = "error"
+            return False
+
+# Flask web service routes
+@app.route('/')
+def index():
+    # HTML template with responsive design
+    html_template = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>NSE Stock Analyzer Dashboard</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                margin: 0;
+                padding: 0;
+                background-color: #f5f5f5;
+                color: #333;
+            }
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+            }
+            h1, h2, h3 {
+                color: #2c3e50;
+            }
+            .header {
+                background-color: #2c3e50;
+                color: white;
+                padding: 20px;
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            .stats-container {
+                display: flex;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                margin-bottom: 20px;
+            }
+            .stats-card {
+                background: white;
+                border-radius: 5px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                padding: 15px;
+                margin-bottom: 15px;
+                flex: 1;
+                min-width: 200px;
+                margin-right: 15px;
+            }
+            .stats-card:last-child {
+                margin-right: 0;
+            }
+            .tabs {
+                display: flex;
+                margin-bottom: 15px;
+                overflow-x: auto;
+            }
+            .tab {
+                padding: 10px 15px;
+                background: #ddd;
+                cursor: pointer;
+                margin-right: 5px;
+                border-radius: 3px 3px 0 0;
+            }
+            .tab.active {
+                background: #2c3e50;
+                color: white;
+            }
+            .tab-content {
+                display: none;
+                background: white;
+                padding: 15px;
+                border-radius: 0 0 5px 5px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }
+            .tab-content.active {
+                display: block;
+            }
+            .filters {
+                display: flex;
+                margin-bottom: 15px;
+                flex-wrap: wrap;
+            }
+            .filter-btn {
+                padding: 8px 12px;
+                background: #e0e0e0;
+                border: none;
+                border-radius: 3px;
+                margin-right: 10px;
+                margin-bottom: 5px;
+                cursor: pointer;
+            }
+            .filter-btn.active {
+                background: #3498db;
+                color: white;
+            }
+            .stock-table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            .stock-table th, .stock-table td {
+                padding: 10px;
+                text-align: left;
+                border-bottom: 1px solid #ddd;
+            }
+            .stock-table th {
+                background-color: #f2f2f2;
+            }
+            .stock-table tr:hover {
+                background-color: #f9f9f9;
+            }
+            .buy, .strong-buy, .oversold {
+                background-color: rgba(46, 204, 113, 0.2);
+            }
+            .sell, .strong-sell, .overbought {
+                background-color: rgba(231, 76, 60, 0.2);
+            }
+            .signal {
+                font-weight: bold;
+            }
+            .signal.buy, .signal.strong-buy {
+                color: #27ae60;
+            }
+            .signal.sell, .signal.strong-sell {
+                color: #c0392b;
+            }
+            .signal.oversold {
+                color: #2980b9;
+            }
+            .signal.overbought {
+                color: #d35400;
+            }
+            .timestamp-info {
+                margin: 10px 0;
+                font-style: italic;
+                color: #666;
+            }
+            .number {
+                text-align: right;
+            }
+            .loading {
+                text-align: center;
+                padding: 30px;
+            }
+            .spinner {
+                border: 5px solid #f3f3f3;
+                border-top: 5px solid #3498db;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                animation: spin 1s linear infinite;
+                margin: 0 auto;
+            }
+            .no-data {
+                padding: 20px;
+                text-align: center;
+                color: #666;
+            }
+            .refresh-btn {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 3px;
+                cursor: pointer;
+                margin-bottom: 15px;
+            }
+            .refresh-btn:hover {
+                background-color: #2980b9;
+            }
+            .status-badge {
+                display: inline-block;
+                padding: 3px 10px;
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            .status-idle {
+                background-color: #2ecc71;
+                color: white;
+            }
+            .status-running {
+                background-color: #f39c12;
+                color: white;
+            }
+            .status-error {
+                background-color: #e74c3c;
+                color: white;
+            }
+            .table-responsive {
+                overflow-x: auto;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            @media (max-width: 768px) {
+                .stats-container {
+                    flex-direction: column;
+                }
+                .stats-card {
+                    margin-right: 0;
+                    width: 100%;
+                }
+                .table-responsive {
+                    overflow-x: auto;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>NSE Stock Analyzer Dashboard</h1>
+            <p>Real-time stock analysis with Supertrend and RSI indicators</p>
+        </div>
+        
+        <div class="container">
+            <div class="stats-container">
+                <div class="stats-card">
+                    <h3>Status</h3>
+                    <p>
+                        <span id="status-badge" class="status-badge status-idle">Idle</span>
+                    </p>
+                </div>
+                <div class="stats-card">
+                    <h3>Last Update</h3>
+                    <p id="last-update">Loading...</p>
+                </div>
+                <div class="stats-card">
+                    <h3>Next Update</h3>
+                    <p id="next-update">Loading...</p>
+                </div>
+            </div>
+            
+            <button id="refresh-btn" class="refresh-btn">Refresh Data</button>
+            
+            <div class="tabs">
+                <div class="tab active" data-tab="large-cap">Large Cap (Daily)</div>
+                <div class="tab" data-tab="mid-cap">Mid Cap (Daily)</div>
+                <div class="tab" data-tab="small-cap">Small Cap (Daily)</div>
+                <div class="tab" data-tab="weekly">Weekly Analysis</div>
+                <div class="tab" data-tab="monthly">Monthly Analysis</div>
+            </div>
+            
+            <div class="filters">
+                <button class="filter-btn active" data-filter="all">All Signals</button>
+                <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                <button class="filter-btn" data-filter="sell">Sell Signals</button>
+            </div>
+            
+            <div id="large-cap" class="tab-content active">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading large cap analysis...</p>
+                </div>
+            </div>
+            
+            <div id="mid-cap" class="tab-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading mid cap analysis...</p>
+                </div>
+            </div>
+            
+            <div id="small-cap" class="tab-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading small cap analysis...</p>
+                </div>
+            </div>
+            
+            <div id="weekly" class="tab-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading weekly analysis...</p>
+                </div>
+            </div>
+            
+            <div id="monthly" class="tab-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading monthly analysis...</p>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                // Fetch data when page loads
+                fetchData();
+                
+                // Set up tab switching
+                const tabs = document.querySelectorAll('.tab');
+                tabs.forEach(tab => {
+                    tab.addEventListener('click', () => {
+                        // Remove active class from all tabs
+                        tabs.forEach(t => t.classList.remove('active'));
+                        
+                        // Add active class to clicked tab
+                        tab.classList.add('active');
+                        
+                        // Hide all tab content
+                        const tabContents = document.querySelectorAll('.tab-content');
+                        tabContents.forEach(content => content.classList.remove('active'));
+                        
+                        // Show selected tab content
+                        const tabName = tab.getAttribute('data-tab');
+                        document.getElementById(tabName).classList.add('active');
+                    });
+                });
+                
+                // Set up filters
+                const filters = document.querySelectorAll('.filter-btn');
+                filters.forEach(filter => {
+                    filter.addEventListener('click', () => {
+                        // Remove active class from all filters
+                        filters.forEach(f => f.classList.remove('active'));
+                        
+                        // Add active class to clicked filter
+                        filter.classList.add('active');
+                        
+                        // Apply filter
+                        applyFilter(filter.getAttribute('data-filter'));
+                    });
+                });
+                
+                // Set up refresh button
+                document.getElementById('refresh-btn').addEventListener('click', fetchData);
+                
+                // Auto-refresh every 5 minutes
+                setInterval(fetchData, 300000);
+                
+                function fetchData() {
+                    // Show loading in all tabs
+                    document.querySelectorAll('.tab-content').forEach(content => {
+                        content.innerHTML = `
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <p>Loading analysis data...</p>
+                            </div>
+                        `;
+                    });
+                    
+                    // Fetch the data
+                    fetch('/api/results')
+                        .then(response => response.json())
+                        .then(data => {
+                            // Update status indicators
+                            document.getElementById('last-update').textContent = data.last_update || 'N/A';
+                            document.getElementById('next-update').textContent = data.next_update || 'N/A';
+                            
+                            const statusBadge = document.getElementById('status-badge');
+                            statusBadge.className = 'status-badge';
+                            statusBadge.classList.add('status-' + data.status);
+                            statusBadge.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+                            
+                            // Update content for each tab
+                            updateTabContent('large-cap', data.large);
+                            updateTabContent('mid-cap', data.mid);
+                            updateTabContent('small-cap', data.small);
+                            updateTabContent('weekly', data.weekly);
+                            updateTabContent('monthly', data.monthly);
+                            
+                            // Apply current filter
+                            const activeFilter = document.querySelector('.filter-btn.active');
+                            if (activeFilter) {
+                                applyFilter(activeFilter.getAttribute('data-filter'));
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching data:', error);
+                            document.querySelectorAll('.tab-content').forEach(content => {
+                                content.innerHTML = `
+                                    <div class="no-data">
+                                        <p>Error loading data. Please try again later.</p>
+                                    </div>
+                                `;
+                            });
+                        });
+                }
+                
+                function updateTabContent(tabId, data) {
+                    const tabContent = document.getElementById(tabId);
+                    
+                    if (!data || data.length === 0) {
+                        tabContent.innerHTML = `
+                            <div class="no-data">
+                                <p>No data available for this category.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Generate HTML table
+                    let html = `<div class="table-responsive">`;
+                    html += `<div class="timestamp-info">Last Updated: ${document.getElementById('last-update').textContent} (IST)</div>`;
+                    html += `<table class="stock-table">`;
+                    html += `<thead><tr>`;
+                    
+                    // Add headers
+                    const headers = Object.keys(data[0]);
+                    headers.forEach(header => {
+                        html += `<th>${header}</th>`;
+                    });
+                    
+                    html += `</tr></thead><tbody>`;
+                    
+                    // Add rows
+                    data.forEach(row => {
+                        const signal = row.Signal || 'NEUTRAL';
+                        const signalClass = signal.toLowerCase().replace(' ', '-');
+                        
+                        html += `<tr class="${signalClass}">`;
+                        headers.forEach(key => {
+                            if (key === 'Signal') {
+                                html += `<td class="signal ${signalClass}">${row[key]}</td>`;
+                            } else if (typeof row[key] === 'number') {
+                                html += `<td class="number">${row[key]}</td>`;
+                            } else {
+                                html += `<td>${row[key]}</td>`;
+                            }
+                        });
+                        html += `</tr>`;
+                    });
+                    
+                    html += `</tbody></table></div>`;
+                    tabContent.innerHTML = html;
+                }
+                
+                function applyFilter(filter) {
+                    const rows = document.querySelectorAll('.stock-table tbody tr');
+                    
+                    rows.forEach(row => {
+                        if (filter === 'all') {
+                            row.style.display = '';
+                        } else if (filter === 'buy') {
+                            const signal = row.querySelector('.signal').textContent;
+                            if (['BUY', 'STRONG BUY', 'OVERSOLD'].includes(signal)) {
+                                row.style.display = '';
+                            } else {
+                                row.style.display = 'none';
+                            }
+                        } else if (filter === 'sell') {
+                            const signal = row.querySelector('.signal').textContent;
+                            if (['SELL', 'STRONG SELL', 'OVERBOUGHT'].includes(signal)) {
+                                row.style.display = '';
+                            } else {
+                                row.style.display = 'none';
+                            }
+                        }
+                    });
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template)
+
+@app.route('/api/results')
+def api_results():
+    """API endpoint to get the latest analysis results"""
+    with results_lock:
+        return jsonify(latest_results)
+
+@app.route('/api/analyze')
+def api_analyze():
+    """API endpoint to trigger an analysis run"""
+    # Check if already running
+    with results_lock:
+        if latest_results["status"] == "running":
+            return jsonify({"status": "already_running", "message": "Analysis is already in progress"})
+    
+    # Start analysis in a separate thread
+    def run_analysis_thread():
+        analyzer = StockAnalyzer()
+        analyzer.run_analysis()
+    
+    threading.Thread(target=run_analysis_thread).start()
+    return jsonify({"status": "started", "message": "Analysis started"})
+
+@app.route('/api/stock/<symbol>')
+def api_stock(symbol):
+    """API endpoint to get analysis for a specific stock"""
+    timeframe = request.args.get('timeframe', 'daily')
+    
+    analyzer = StockAnalyzer()
+    result = analyzer.analyze_stock(symbol.upper(), timeframe)
+    
+    if result:
+        return jsonify({"status": "success", "data": result})
+    else:
+        return jsonify({"status": "error", "message": f"Unable to analyze {symbol}"})
+
+@app.route('/healthcheck')
+def healthcheck():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "timestamp": get_ist_time().strftime("%Y-%m-%d %H:%M:%S")})
+
+def schedule_jobs():
+    """Schedule regular analysis jobs"""
+    analyzer = StockAnalyzer()
+    
+    # Schedule analysis to run every ANALYSIS_INTERVAL minutes during market hours
+    def job():
+        current_time = get_ist_time()
+        # Check if current time is during market hours (9:15 AM to 3:30 PM IST, Monday to Friday)
+        if (current_time.weekday() < 5 and  # Monday to Friday
+            current_time.hour >= 9 and  # After 9 AM
+            (current_time.hour < 15 or (current_time.hour == 15 and current_time.minute <= 30))):  # Before 3:30 PM
+            logger.info("Running scheduled analysis during market hours")
+            analyzer.run_analysis()
+        else:
+            logger.info("Skipping scheduled analysis outside market hours")
+    
+    # Schedule the job
+    schedule.every(ANALYSIS_INTERVAL).minutes.do(job)
+    
+    # Also run analysis at market open and close
+    schedule.every().monday.to.friday.at("09:20").do(analyzer.run_analysis)
+    schedule.every().monday.to.friday.at("15:35").do(analyzer.run_analysis)
+    
+    logger.info(f"Scheduled analysis to run every {ANALYSIS_INTERVAL} minutes during market hours")
+    
+    # Continuous loop to run scheduled jobs
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Check every minute
+
+def main():
+    """Main function to start the application"""
+    # Create a stock analyzer instance and run initial analysis
+    analyzer = StockAnalyzer()
+    
+    # First-time analysis
+    threading.Thread(target=analyzer.run_analysis).start()
+    
+    # Start the scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=schedule_jobs, daemon=True)
+    scheduler_thread.start()
+    
+    # Start web server
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("DEBUG", "False").lower() == "true"
+    
+    logger.info(f"Starting web server on {host}:{port} (debug={debug})")
+    app.run(host=host, port=port, debug=debug, use_reloader=False)
+
+if __name__ == "__main__":
+    main()
