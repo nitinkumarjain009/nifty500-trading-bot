@@ -514,8 +514,8 @@ class StockAnalyzer:
         """Vectorized ATR calculation for better performance"""
         try:
             tr1 = high - low
-            tr2 = (high - close.shift()).abs()  # Fix: Use abs() instead of direct comparison
-            tr3 = (low - close.shift()).abs()   # Fix: Use abs() instead of direct comparison
+            tr2 = abs(high - close.shift())  # Fix: Use abs() directly
+            tr3 = abs(low - close.shift())   # Fix: Use abs() directly
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr = tr.rolling(period).mean()
             return atr
@@ -524,8 +524,14 @@ class StockAnalyzer:
             return pd.Series(0, index=high.index)
     
     def calculate_supertrend(self, df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
-        """Optimized Supertrend calculation"""
+        """Fixed Supertrend calculation"""
         try:
+            if df.empty or len(df) < period:
+                logger.warning("DataFrame is empty or has insufficient data for Supertrend calculation")
+                df['Supertrend'] = 0
+                df['Supertrend_Direction'] = 0
+                return df
+                
             high = df['High']
             low = df['Low']
             close = df['Close']
@@ -538,45 +544,48 @@ class StockAnalyzer:
             basic_upperband = hl2 + (multiplier * atr)
             basic_lowerband = hl2 - (multiplier * atr)
             
-            # Initialize arrays
-            final_upperband = np.zeros(len(df))
-            final_lowerband = np.zeros(len(df))
-            supertrend = np.zeros(len(df))
+            # Initialize final bands and supertrend series
+            final_upperband = pd.Series(index=df.index)
+            final_lowerband = pd.Series(index=df.index)
+            supertrend = pd.Series(index=df.index)
             
-            # Set initial values
-            for i in range(0, min(period, len(df))):
-                final_upperband[i] = basic_upperband.iloc[i]
-                final_lowerband[i] = basic_lowerband.iloc[i]
-                supertrend[i] = basic_upperband.iloc[i]
+            # Initialize first values
+            for i in range(period):
+                final_upperband.iloc[i] = basic_upperband.iloc[i]
+                final_lowerband.iloc[i] = basic_lowerband.iloc[i]
+                supertrend.iloc[i] = basic_upperband.iloc[i]
             
-            # Calculate Supertrend with optimized loop
+            # Calculate rest of the values iteratively
             for i in range(period, len(df)):
                 # Upper band
-                if close.iloc[i-1] <= final_upperband[i-1]:
-                    final_upperband[i] = min(basic_upperband.iloc[i], final_upperband[i-1])
+                if basic_upperband.iloc[i] < final_upperband.iloc[i-1] or close.iloc[i-1] > final_upperband.iloc[i-1]:
+                    final_upperband.iloc[i] = basic_upperband.iloc[i]
                 else:
-                    final_upperband[i] = basic_upperband.iloc[i]
+                    final_upperband.iloc[i] = final_upperband.iloc[i-1]
                 
                 # Lower band
-                if close.iloc[i-1] >= final_lowerband[i-1]:
-                    final_lowerband[i] = max(basic_lowerband.iloc[i], final_lowerband[i-1])
+                if basic_lowerband.iloc[i] > final_lowerband.iloc[i-1] or close.iloc[i-1] < final_lowerband.iloc[i-1]:
+                    final_lowerband.iloc[i] = basic_lowerband.iloc[i]
                 else:
-                    final_lowerband[i] = basic_lowerband.iloc[i]
+                    final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
                 
-                # Supertrend
-                if close.iloc[i] <= final_upperband[i]:
-                    supertrend[i] = final_upperband[i]
+                # Supertrend value
+                if supertrend.iloc[i-1] == final_upperband.iloc[i-1] and close.iloc[i] <= final_upperband.iloc[i]:
+                    supertrend.iloc[i] = final_upperband.iloc[i]
+                elif supertrend.iloc[i-1] == final_upperband.iloc[i-1] and close.iloc[i] > final_upperband.iloc[i]:
+                    supertrend.iloc[i] = final_lowerband.iloc[i]
+                elif supertrend.iloc[i-1] == final_lowerband.iloc[i-1] and close.iloc[i] >= final_lowerband.iloc[i]:
+                    supertrend.iloc[i] = final_lowerband.iloc[i]
+                elif supertrend.iloc[i-1] == final_lowerband.iloc[i-1] and close.iloc[i] < final_lowerband.iloc[i]:
+                    supertrend.iloc[i] = final_upperband.iloc[i]
                 else:
-                    supertrend[i] = final_lowerband[i]
+                    supertrend.iloc[i] = final_lowerband.iloc[i] if close.iloc[i] > supertrend.iloc[i-1] else final_upperband.iloc[i]
             
-            # Convert back to pandas series
-            df['Supertrend'] = pd.Series(supertrend, index=df.index)
+            # Add supertrend to dataframe
+            df['Supertrend'] = supertrend
             
-            # Determine trend (1 for uptrend, -1 for downtrend)
-            df['Supertrend_Direction'] = 0
-            # Fix: Use numpy comparison to avoid ambiguous truth value of Series
-            df.loc[close.values > df['Supertrend'].values, 'Supertrend_Direction'] = 1
-            df.loc[close.values <= df['Supertrend'].values, 'Supertrend_Direction'] = -1
+            # Calculate trend direction (1 for uptrend, -1 for downtrend)
+            df['Supertrend_Direction'] = np.where(close > supertrend, 1, -1)
             
             return df
         except Exception as e:
@@ -586,29 +595,30 @@ class StockAnalyzer:
             return df
     
     def calculate_rsi(self, df, period=RSI_PERIOD):
-        """Optimized RSI calculation"""
+        """Fixed RSI calculation"""
         try:
-            close = df['Close']
-            delta = close.diff()
+            if df.empty or len(df) < period + 1:
+                logger.warning("DataFrame is empty or has insufficient data for RSI calculation")
+                df['RSI'] = 50
+                return df
+                
+            delta = df['Close'].diff()
             
-            # Make two series: one for gains and one for losses
+            # Create gain and loss series
             gain = delta.copy()
             loss = delta.copy()
             
-            # Fix: Use numpy for element-wise comparison to avoid ambiguous truth values
-            gain = gain.where(delta > 0, 0)
-            loss = -loss.where(delta < 0, 0)  # Make losses positive
+            gain[gain < 0] = 0
+            loss[loss > 0] = 0
+            loss = -loss  # Make losses positive
             
-            # Calculate average gain and average loss
-            avg_gain = gain.rolling(window=period).mean()
-            avg_loss = loss.rolling(window=period).mean()
+            # First average gain and loss
+            avg_gain = gain.rolling(window=period).mean().fillna(0)
+            avg_loss = loss.rolling(window=period).mean().fillna(0)
             
-            # Calculate RS (Relative Strength)
-            # Fix: Handle division by zero
-            rs = avg_gain / avg_loss.replace(0, 1e-10)  # Small value instead of zero
-            
-            # Calculate RSI
-            rsi = 100 - (100 / (1 + rs))
+            # Calculate RS and RSI
+            rs = avg_gain / avg_loss.replace(0, 1e-10)  # Avoid division by zero
+            rsi = 100.0 - (100.0 / (1.0 + rs))
             
             df['RSI'] = rsi
             return df
@@ -642,25 +652,26 @@ class StockAnalyzer:
                 
                 # Determine signal
                 signal = "NEUTRAL"
-                supertrend_flipped = last_row['Supertrend_Direction'] != prev_row['Supertrend_Direction']
+                supertrend_direction = last_row['Supertrend_Direction']
+                prev_supertrend_direction = prev_row['Supertrend_Direction']
+                supertrend_flipped = supertrend_direction != prev_supertrend_direction
+                rsi_value = last_row['RSI']
                 
-                # Fix: Use explicit numeric comparisons to avoid ambiguous truth values
-                if (last_row['Supertrend_Direction'] == 1 and 
-                    last_row['RSI'] > 50 and 
-                    last_row['RSI'] < RSI_OVERBOUGHT):
-                    signal = "BUY"
-                    if supertrend_flipped:
-                        signal = "STRONG BUY"
-                elif (last_row['Supertrend_Direction'] == -1 and 
-                      last_row['RSI'] < 50 and 
-                      last_row['RSI'] > RSI_OVERSOLD):
-                    signal = "SELL"
-                    if supertrend_flipped:
-                        signal = "STRONG SELL"
-                elif last_row['RSI'] >= RSI_OVERBOUGHT:
-                    signal = "OVERBOUGHT"
-                elif last_row['RSI'] <= RSI_OVERSOLD:
-                    signal = "OVERSOLD"
+                # Determine signal based on fixed conditions
+                if supertrend_direction == 1:
+                    if rsi_value > 50 and rsi_value < RSI_OVERBOUGHT:
+                        signal = "BUY"
+                        if supertrend_flipped:
+                            signal = "STRONG BUY"
+                    elif rsi_value >= RSI_OVERBOUGHT:
+                        signal = "OVERBOUGHT"
+                elif supertrend_direction == -1:
+                    if rsi_value < 50 and rsi_value > RSI_OVERSOLD:
+                        signal = "SELL"
+                        if supertrend_flipped:
+                            signal = "STRONG SELL"
+                    elif rsi_value <= RSI_OVERSOLD:
+                        signal = "OVERSOLD"
                 
                 # Format the result
                 timestamp = last_row.name
@@ -700,137 +711,118 @@ class StockAnalyzer:
             data = self.calculate_supertrend(data)
             
             # Use appropriate RSI period based on timeframe
-            rsi_period = RSI_PERIOD
             if timeframe == "weekly":
-                rsi_period = RSI_PERIOD_WEEKLY
+                data = self.calculate_rsi(data, period=RSI_PERIOD_WEEKLY)
             elif timeframe == "monthly":
-                rsi_period = RSI_PERIOD_MONTHLY
-                
-            data = self.calculate_rsi(data, period=rsi_period)
+                data = self.calculate_rsi(data, period=RSI_PERIOD_MONTHLY)
+            else:
+                data = self.calculate_rsi(data, period=RSI_PERIOD)
             
             if len(data) < 2:
-                logger.warning(f"Insufficient {timeframe} data points for {symbol}")
+                logger.warning(f"Insufficient data points for {symbol} ({timeframe})")
                 return None
             
             # Get last row for analysis
             last_row = data.iloc[-1]
             prev_row = data.iloc[-2]
             
-            # Determine signal based on Supertrend and RSI
+            # Determine signal
             signal = "NEUTRAL"
-            supertrend_flipped = last_row['Supertrend_Direction'] != prev_row['Supertrend_Direction']
+            supertrend_direction = last_row['Supertrend_Direction']
+            prev_supertrend_direction = prev_row['Supertrend_Direction']
+            supertrend_flipped = supertrend_direction != prev_supertrend_direction
+            rsi_value = last_row['RSI']
             
-            # Fix: Use explicit numeric comparisons to avoid ambiguous truth values
-            if (last_row['Supertrend_Direction'] == 1 and 
-                last_row['RSI'] > 50 and 
-                last_row['RSI'] < RSI_OVERBOUGHT):
-                signal = "BUY"
-                if supertrend_flipped:
-                    signal = "STRONG BUY"
-            elif (last_row['Supertrend_Direction'] == -1 and 
-                  last_row['RSI'] < 50 and 
-                  last_row['RSI'] > RSI_OVERSOLD):
-                signal = "SELL"
-                if supertrend_flipped:
-                    signal = "STRONG SELL"
-            elif last_row['RSI'] >= RSI_OVERBOUGHT:
-                signal = "OVERBOUGHT"
-            elif last_row['RSI'] <= RSI_OVERSOLD:
-                signal = "OVERSOLD"
+            # Determine signal based on combined indicators
+            if supertrend_direction == 1:
+                if rsi_value > 50 and rsi_value < RSI_OVERBOUGHT:
+                    signal = "BUY"
+                    if supertrend_flipped:
+                        signal = "STRONG BUY"
+                elif rsi_value >= RSI_OVERBOUGHT:
+                    signal = "OVERBOUGHT"
+            elif supertrend_direction == -1:
+                if rsi_value < 50 and rsi_value > RSI_OVERSOLD:
+                    signal = "SELL"
+                    if supertrend_flipped:
+                        signal = "STRONG SELL"
+                elif rsi_value <= RSI_OVERSOLD:
+                    signal = "OVERSOLD"
             
-            # Format the timestamp from the DataFrame index
+            # Format the result
             timestamp = last_row.name
             if isinstance(timestamp, pd.Timestamp):
                 date_str = timestamp.strftime('%Y-%m-%d')
             else:
                 date_str = "N/A"
             
-            # Format the result
+            # Get stock name if available (for better readability)
+            stock_name = symbol
+            try:
+                if self.nse:
+                    stock_info = self.nse.get_quote(symbol)
+                    if stock_info and 'companyName' in stock_info:
+                        stock_name = stock_info['companyName']
+            except:
+                pass  # Use symbol if name fetch fails
+            
             result = {
                 'Symbol': symbol,
+                'Name': stock_name,
+                'Timeframe': timeframe.capitalize(),
                 'Date': date_str,
                 'Price': round(last_row['Close'], 2),
                 'Previous Close': round(prev_row['Close'], 2),
                 'Change %': round(((last_row['Close'] - prev_row['Close']) / prev_row['Close']) * 100, 2),
-                'RSI': round(last_row['RSI'], 2),
-                'Timeframe': timeframe.capitalize(),
+                'RSI': round(rsi_value, 2),
                 'Signal': signal
             }
             
+            logger.info(f"Successfully analyzed {symbol} ({timeframe}): {signal}")
             return result
-        
+            
         except Exception as e:
-            log_error(f"Stock analysis ({symbol}, {timeframe})", e)
+            log_error(f"Stock analysis for {symbol} ({timeframe})", e)
             return None
     
     def analyze_stocks_batch(self, symbols, timeframe="daily"):
-        """Analyze a batch of stocks in parallel"""
         results = []
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # Submit all tasks and store futures
-            futures = {executor.submit(self.analyze_stock, symbol, timeframe): symbol for symbol in symbols}
-            
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(futures):
-                symbol = futures[future]
-                try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                        logger.info(f"Successfully analyzed {symbol} ({timeframe})")
-                except Exception as e:
-                    log_error(f"Stock batch analysis ({symbol}, {timeframe})", e)
-        
+        for symbol in symbols:
+            try:
+                result = self.analyze_stock(symbol, timeframe)
+                if result:
+                    results.append(result)
+            except Exception as e:
+                log_error(f"Batch analysis for {symbol}", e)
         return results
     
-    def analyze_stocks(self, category="large", timeframe="daily"):
-        """Analyze all stocks in specified category"""
-        try:
-            # Get stock list for category
-            symbols = self.fetch_stock_list(category)
-            
-            if not symbols:
-                logger.error(f"No symbols found for {category} cap")
-                return []
-            
-            all_results = []
-            
-            # Process in batches to avoid overwhelming the API
-            for i in range(0, len(symbols), BATCH_SIZE):
-                batch = symbols[i:i+BATCH_SIZE]
-                logger.info(f"Processing batch {i//BATCH_SIZE + 1} of {math.ceil(len(symbols)/BATCH_SIZE)} for {category} cap ({timeframe})")
-                
-                # Analyze the batch
-                batch_results = self.analyze_stocks_batch(batch, timeframe)
-                all_results.extend(batch_results)
-                
-                # Sleep briefly to avoid rate limiting
-                time.sleep(1)
-            
-            # Sort results by signal priority
-            signal_priority = {
-                "STRONG BUY": 1,
-                "BUY": 2,
-                "OVERSOLD": 3,
-                "NEUTRAL": 4,
-                "OVERBOUGHT": 5,
-                "SELL": 6,
-                "STRONG SELL": 7
+    def analyze_stocks_parallel(self, symbols, timeframe="daily"):
+        # Split symbols into batches
+        batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
+        all_results = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Submit batch jobs
+            future_to_batch = {
+                executor.submit(self.analyze_stocks_batch, batch, timeframe): batch 
+                for batch in batches
             }
             
-            all_results.sort(key=lambda x: signal_priority.get(x['Signal'], 999))
-            
-            return all_results
+            # Process completed jobs
+            for future in concurrent.futures.as_completed(future_to_batch):
+                batch = future_to_batch[future]
+                try:
+                    batch_results = future.result()
+                    all_results.extend(batch_results)
+                    logger.info(f"Completed batch analysis of {len(batch)} stocks")
+                except Exception as e:
+                    log_error(f"Parallel analysis batch", e)
         
-        except Exception as e:
-            log_error(f"Stock analysis for {category} cap ({timeframe})", e)
-            return []
+        return all_results
     
     def send_telegram_notification(self, message):
-        """Send notification to Telegram"""
         if not self.bot or not TELEGRAM_CHAT_ID:
-            logger.warning("Telegram bot or chat ID not set. Notification not sent.")
+            logger.info("Telegram notification skipped (bot or chat ID not configured)")
             return False
         
         try:
@@ -841,618 +833,781 @@ class StockAnalyzer:
             log_error("Telegram notification", e)
             return False
     
-    def format_results_message(self, results, category, timeframe="daily"):
-        """Format results for Telegram message"""
+    def generate_notification_message(self, results, category):
         if not results:
-            return f"No {timeframe} signals for {category} cap stocks"
-            
-        # Group by signal
-        signals = {}
-        for result in results:
-            signal = result['Signal']
-            if signal not in signals:
-                signals[signal] = []
-            signals[signal].append(result)
+            return None
         
-        # Format message
-        message = f"<b>{timeframe.capitalize()} Analysis for {category.capitalize()} Cap Stocks</b>\n"
-        message += f"<i>Generated at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')} IST</i>\n\n"
+        # Filter for strong signals only
+        strong_signals = [r for r in results if r['Signal'] in ["STRONG BUY", "STRONG SELL"]]
         
-        # Order signals by priority
-        signal_order = ["STRONG BUY", "BUY", "OVERSOLD", "NEUTRAL", "OVERBOUGHT", "SELL", "STRONG SELL"]
+        if not strong_signals:
+            return None
         
-        for signal in signal_order:
-            if signal in signals and signals[signal]:
-                message += f"<b>{signal} ({len(signals[signal])}):</b>\n"
-                
-                # List top stocks for each signal (max 5)
-                for i, result in enumerate(signals[signal][:5]):
-                    message += f"• {result['Symbol']}: ₹{result['Price']} (RSI: {result['RSI']})\n"
-                
-                if len(signals[signal]) > 5:
-                    message += f"<i>...and {len(signals[signal]) - 5} more</i>\n"
-                
-                message += "\n"
+        # Group by signal type
+        buy_signals = [r for r in strong_signals if r['Signal'] == "STRONG BUY"]
+        sell_signals = [r for r in strong_signals if r['Signal'] == "STRONG SELL"]
         
+        message = f"<b>🔔 {category.upper()} CAP STOCK SIGNALS</b>\n\n"
+        
+        if buy_signals:
+            message += "<b>🟢 STRONG BUY Signals:</b>\n"
+            for signal in buy_signals[:5]:  # Limit to 5 signals
+                message += f"• {signal['Symbol']} - ₹{signal['Price']} (RSI: {signal['RSI']})\n"
+            if len(buy_signals) > 5:
+                message += f"...and {len(buy_signals) - 5} more\n"
+        
+        if sell_signals:
+            message += "\n<b>🔴 STRONG SELL Signals:</b>\n"
+            for signal in sell_signals[:5]:  # Limit to 5 signals
+                message += f"• {signal['Symbol']} - ₹{signal['Price']} (RSI: {signal['RSI']})\n"
+            if len(sell_signals) > 5:
+                message += f"...and {len(sell_signals) - 5} more\n"
+        
+        message += f"\n<i>Generated on {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')} (IST)</i>"
         return message
     
     def run_analysis(self):
-        """Run the complete analysis process"""
         try:
             logger.info("Starting stock analysis...")
-            
-            # Update status
             with results_lock:
                 latest_results["status"] = "running"
+                latest_results["last_update"] = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
+                latest_results["next_update"] = (get_ist_time() + timedelta(minutes=ANALYSIS_INTERVAL)).strftime("%Y-%m-%d %H:%M:%S")
             
-            # Analyze major indices
-            logger.info("Analyzing major indices...")
+            # Analyze major indices first (always do this)
             indices_results = self.analyze_major_indices()
             
-            # Analyze daily data for all categories
-            logger.info("Analyzing daily data for large cap stocks...")
-            large_cap_results = self.analyze_stocks("large", "daily")
+            # Get stock lists
+            large_cap_stocks = self.fetch_stock_list("large")
+            mid_cap_stocks = self.fetch_stock_list("mid")
+            small_cap_stocks = self.fetch_stock_list("small")
             
-            logger.info("Analyzing daily data for mid cap stocks...")
-            mid_cap_results = self.analyze_stocks("mid", "daily")
+            # Analyze stocks in parallel
+            large_cap_results = self.analyze_stocks_parallel(large_cap_stocks)
+            mid_cap_results = self.analyze_stocks_parallel(mid_cap_stocks)
+            small_cap_results = self.analyze_stocks_parallel(small_cap_stocks)
             
-            logger.info("Analyzing daily data for small cap stocks...")
-            small_cap_results = self.analyze_stocks("small", "daily")
+            # Also perform weekly and monthly analyses (using a subset for efficiency)
+            weekly_stocks = large_cap_stocks[:20] + mid_cap_stocks[:10] + small_cap_stocks[:10]
+            monthly_stocks = large_cap_stocks[:10] + mid_cap_stocks[:5] + small_cap_stocks[:5]
             
-            # Analyze weekly data for all categories combined
-            logger.info("Analyzing weekly data...")
-            # Combine top stocks from each category for weekly analysis to reduce load
-            top_stocks = []
-            for results in [large_cap_results, mid_cap_results, small_cap_results]:
-                # Add stocks with strong signals
-                for result in results:
-                    if result['Signal'] in ["STRONG BUY", "STRONG SELL", "BUY", "SELL", "OVERSOLD", "OVERBOUGHT"]:
-                        top_stocks.append(result['Symbol'])
-            
-            # Remove duplicates and limit to 50 stocks for weekly analysis
-            top_stocks = list(set(top_stocks))[:50]
-            weekly_results = self.analyze_stocks_batch(top_stocks, "weekly")
-            
-            # Analyze monthly data (just top 20 stocks to reduce load)
-            logger.info("Analyzing monthly data...")
-            monthly_stocks = top_stocks[:20]
-            monthly_results = self.analyze_stocks_batch(monthly_stocks, "monthly")
-            
-            # Send notifications if enabled
-            if self.bot and TELEGRAM_CHAT_ID:
-                # Send summary notifications for each timeframe
-                logger.info("Sending Telegram notifications...")
-                
-                # Daily summary
-                daily_message = "<b>🔔 DAILY ANALYSIS SUMMARY</b>\n\n"
-                
-                # Add indices summary
-                daily_message += "<b>📊 INDICES:</b>\n"
-                for idx in indices_results:
-                    trend = "🔴" if idx['Change %'] < 0 else "🟢"
-                    daily_message += f"{trend} {idx['Index']}: {idx['Price']} ({idx['Change %']}%), {idx['Signal']}\n"
-                daily_message += "\n"
-                
-                # Add top signals from each category
-                for category, results in [("Large Cap", large_cap_results), 
-                                         ("Mid Cap", mid_cap_results), 
-                                         ("Small Cap", small_cap_results)]:
-                    strong_signals = [r for r in results if r['Signal'] in ["STRONG BUY", "STRONG SELL"]][:3]
-                    if strong_signals:
-                        daily_message += f"<b>{category} Strong Signals:</b>\n"
-                        for r in strong_signals:
-                            signal_emoji = "🟢" if r['Signal'] == "STRONG BUY" else "🔴"
-                            daily_message += f"{signal_emoji} {r['Symbol']}: ₹{r['Price']} ({r['Signal']})\n"
-                        daily_message += "\n"
-                
-                self.send_telegram_notification(daily_message)
-                
-                # Weekly and Monthly summaries (optional, based on configuration)
-                if os.environ.get("SEND_WEEKLY_SUMMARY", "True").lower() == "true":
-                    weekly_message = self.format_results_message(weekly_results, "all", "weekly")
-                    self.send_telegram_notification(weekly_message)
-                
-                if os.environ.get("SEND_MONTHLY_SUMMARY", "True").lower() == "true":
-                    monthly_message = self.format_results_message(monthly_results, "all", "monthly")
-                    self.send_telegram_notification(monthly_message)
+            weekly_results = self.analyze_stocks_parallel(weekly_stocks, "weekly")
+            monthly_results = self.analyze_stocks_parallel(monthly_stocks, "monthly")
             
             # Update global results
-            current_time = get_ist_time()
-            next_update = current_time + timedelta(minutes=ANALYSIS_INTERVAL)
-            
             with results_lock:
+                latest_results["indices"] = indices_results
                 latest_results["large"] = large_cap_results
                 latest_results["mid"] = mid_cap_results
                 latest_results["small"] = small_cap_results
                 latest_results["weekly"] = weekly_results
                 latest_results["monthly"] = monthly_results
-                latest_results["indices"] = indices_results
-                latest_results["last_update"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                latest_results["next_update"] = next_update.strftime("%Y-%m-%d %H:%M:%S")
+                latest_results["last_update"] = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
+                latest_results["next_update"] = (get_ist_time() + timedelta(minutes=ANALYSIS_INTERVAL)).strftime("%Y-%m-%d %H:%M:%S")
                 latest_results["status"] = "idle"
             
-            logger.info("Analysis completed successfully")
-            return True
-        
-        except Exception as e:
-            log_error("Complete analysis run", e)
+            logger.info("Stock analysis completed successfully")
             
-            # Update status to error
+            # Send telegram notifications for strong signals
+            for category, results in [("Large", large_cap_results), 
+                                     ("Mid", mid_cap_results), 
+                                     ("Small", small_cap_results)]:
+                notification_message = self.generate_notification_message(results, category)
+                if notification_message:
+                    self.send_telegram_notification(notification_message)
+            
+            return True
+        except Exception as e:
+            log_error("Run analysis", e)
             with results_lock:
                 latest_results["status"] = "error"
-            
             return False
+    
+    def scheduled_analysis(self):
+        """Run analysis on schedule"""
+        try:
+            self.run_analysis()
+        except Exception as e:
+            log_error("Scheduled analysis", e)
 
-# Web interface functions
+# Flask routes for the web service
 @app.route('/')
 def index():
-    """Main web interface for stock analysis results"""
-    current_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get results with filter type if specified
-    filter_type = request.args.get('filter', None)
-    
-    # Create HTML template with some styling
-    html = """
+    """Main page with analysis results"""
+    # Define basic HTML/CSS template with tabs
+    html_template = """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <title>NSE Stock Analyzer</title>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>NSE Stock Analyzer</title>
         <style>
             body {
-                font-family: Arial, sans-serif;
-                margin: 0;
-                padding: 20px;
-                background-color: #f4f7f9;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
                 color: #333;
-            }
-            .header {
-                background-color: #2c3e50;
-                color: white;
-                padding: 20px;
-                margin-bottom: 20px;
-                border-radius: 5px;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                margin: 0;
+                padding: 0;
+                background-color: #f5f5f5;
             }
             .container {
                 max-width: 1200px;
                 margin: 0 auto;
+                padding: 20px;
             }
-            .tab-container {
-                display: flex;
+            header {
+                background-color: #2c3e50;
+                color: white;
+                padding: 1rem;
+                text-align: center;
                 margin-bottom: 20px;
-                background: white;
-                border-radius: 5px;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                overflow: hidden;
             }
-            .tab {
-                padding: 15px 20px;
-                cursor: pointer;
-                transition: background-color 0.3s;
-                border-bottom: 3px solid transparent;
+            h1 {
+                margin: 0;
+            }
+            .status-bar {
+                background-color: #34495e;
+                color: white;
+                padding: 10px;
+                border-radius: 4px;
+                margin-bottom: 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .status-indicator {
+                padding: 5px 10px;
+                border-radius: 20px;
                 font-weight: bold;
             }
-            .tab.active {
-                background-color: #f4f7f9;
-                border-bottom: 3px solid #3498db;
-                color: #3498db;
+            .status-idle {
+                background-color: #27ae60;
             }
-            .tab:hover:not(.active) {
-                background-color: #f9f9f9;
+            .status-running {
+                background-color: #f39c12;
+                animation: pulse 1.5s infinite;
             }
-            .tab-content {
+            .status-error {
+                background-color: #e74c3c;
+            }
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.7; }
+                100% { opacity: 1; }
+            }
+            .tab {
+                overflow: hidden;
+                background-color: #f1f1f1;
+                border-radius: 5px 5px 0 0;
+            }
+            .tab button {
+                background-color: inherit;
+                float: left;
+                border: none;
+                outline: none;
+                cursor: pointer;
+                padding: 14px 16px;
+                transition: 0.3s;
+                font-size: 17px;
+            }
+            .tab button:hover {
+                background-color: #ddd;
+            }
+            .tab button.active {
+                background-color: #34495e;
+                color: white;
+            }
+            .tabcontent {
                 display: none;
-                background: white;
                 padding: 20px;
-                border-radius: 5px;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                border: 1px solid #ccc;
+                border-top: none;
+                border-radius: 0 0 5px 5px;
+                background-color: white;
                 margin-bottom: 20px;
             }
-            .tab-content.active {
+            .tabcontent.active {
                 display: block;
             }
-            .filter-container {
-                margin-bottom: 20px;
-                display: flex;
-                justify-content: flex-start;
-                gap: 10px;
+            .filter-bar {
+                margin-bottom: 15px;
+                padding: 10px;
+                background-color: #ecf0f1;
+                border-radius: 4px;
             }
-            .filter-btn {
-                padding: 8px 15px;
-                background-color: #f4f7f9;
-                border: 1px solid #ddd;
-                border-radius: 5px;
+            .filter-bar button {
+                margin-right: 5px;
+                padding: 5px 10px;
+                border: none;
+                border-radius: 3px;
                 cursor: pointer;
-                transition: all 0.3s;
-                font-size: 14px;
-            }
-            .filter-btn.active {
                 background-color: #3498db;
                 color: white;
-                border-color: #3498db;
             }
-            .filter-btn:hover:not(.active) {
-                background-color: #e9ecef;
+            .filter-bar button.active {
+                background-color: #2980b9;
             }
             .stock-table {
                 width: 100%;
                 border-collapse: collapse;
-                margin-bottom: 20px;
-            }
-            .stock-table th, .stock-table td {
-                padding: 12px;
-                text-align: left;
-                border-bottom: 1px solid #ddd;
+                margin-top: 10px;
+                font-size: 14px;
             }
             .stock-table th {
-                background-color: #f4f7f9;
-                font-weight: bold;
-                position: sticky;
-                top: 0;
-                z-index: 10;
+                background-color: #34495e;
+                color: white;
+                padding: 10px;
+                text-align: left;
+            }
+            .stock-table td {
+                padding: 8px 10px;
+                border-bottom: 1px solid #ddd;
             }
             .stock-table tr:hover {
                 background-color: #f9f9f9;
             }
-            .buy, .strong-buy, .oversold {
+            .stock-table tr.buy {
                 background-color: rgba(46, 204, 113, 0.1);
             }
-            .sell, .strong-sell, .overbought {
+            .stock-table tr.strong-buy {
+                background-color: rgba(46, 204, 113, 0.3);
+            }
+            .stock-table tr.sell {
                 background-color: rgba(231, 76, 60, 0.1);
+            }
+            .stock-table tr.strong-sell {
+                background-color: rgba(231, 76, 60, 0.3);
+            }
+            .stock-table tr.oversold {
+                background-color: rgba(52, 152, 219, 0.2);
+            }
+            .stock-table tr.overbought {
+                background-color: rgba(155, 89, 182, 0.2);
             }
             .signal {
                 font-weight: bold;
-                padding: 5px 10px;
+                padding: 3px 6px;
                 border-radius: 3px;
-                text-align: center;
             }
-            .signal.buy, .signal.strong-buy {
-                background-color: #2ecc71;
-                color: white;
+            .signal.buy {
+                background-color: rgba(46, 204, 113, 0.2);
+                color: #27ae60;
             }
-            .signal.sell, .signal.strong-sell {
-                background-color: #e74c3c;
-                color: white;
+            .signal.strong-buy {
+                background-color: rgba(46, 204, 113, 0.4);
+                color: #27ae60;
+            }
+            .signal.sell {
+                background-color: rgba(231, 76, 60, 0.2);
+                color: #c0392b;
+            }
+            .signal.strong-sell {
+                background-color: rgba(231, 76, 60, 0.4);
+                color: #c0392b;
             }
             .signal.oversold {
-                background-color: #3498db;
-                color: white;
+                background-color: rgba(52, 152, 219, 0.2);
+                color: #2980b9;
             }
             .signal.overbought {
-                background-color: #f39c12;
-                color: white;
+                background-color: rgba(155, 89, 182, 0.2);
+                color: #8e44ad;
             }
             .signal.neutral {
-                background-color: #95a5a6;
-                color: white;
+                background-color: rgba(149, 165, 166, 0.2);
+                color: #7f8c8d;
+            }
+            .timestamp-info {
+                font-size: 12px;
+                color: #7f8c8d;
+                text-align: right;
+                margin-bottom: 5px;
             }
             .number {
                 text-align: right;
             }
-            .status-bar {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 10px 20px;
-                background-color: #ecf0f1;
-                border-radius: 5px;
-                margin-bottom: 20px;
-                font-size: 14px;
-            }
-            .status-badge {
-                padding: 5px 10px;
-                border-radius: 3px;
-                font-weight: bold;
-            }
-            .status-idle {
-                background-color: #2ecc71;
-                color: white;
-            }
-            .status-running {
-                background-color: #f39c12;
-                color: white;
-            }
-            .status-error {
-                background-color: #e74c3c;
-                color: white;
-            }
-            .timestamp-info {
-                font-style: italic;
-                color: #7f8c8d;
-                margin-bottom: 10px;
-                font-size: 14px;
-            }
-            .no-data {
-                padding: 20px;
-                text-align: center;
-                color: #7f8c8d;
-                background-color: #f9f9f9;
-                border-radius: 5px;
-                margin: 20px 0;
-            }
-            .table-responsive {
-                overflow-x: auto;
-            }
-            .footer {
-                margin-top: 30px;
-                text-align: center;
-                color: #7f8c8d;
-                font-size: 14px;
-                padding: 20px;
-            }
-            .error-info {
-                background-color: #ffecec;
-                padding: 15px;
-                border-radius: 5px;
-                margin-bottom: 20px;
-                border: 1px solid #f5c6cb;
-            }
-            .error-title {
-                font-weight: bold;
-                color: #721c24;
-                margin-bottom: 10px;
-            }
-            .error-list {
-                font-family: monospace;
-                white-space: pre-wrap;
-                background-color: #f8f9fa;
-                padding: 10px;
-                border-radius: 3px;
-                max-height: 200px;
-                overflow-y: auto;
-                font-size: 12px;
-            }
-            .debug-section {
-                background-color: #f8f9fa;
-                padding: 15px;
-                border-radius: 5px;
+            .diagnostics-section {
                 margin-top: 20px;
-                border: 1px solid #dee2e6;
+                padding: 15px;
+                background-color: #f8f9fa;
+                border-radius: 5px;
+                border: 1px solid #e9ecef;
             }
-            .debug-title {
-                font-weight: bold;
+            .diagnostics-title {
+                font-size: 18px;
                 margin-bottom: 10px;
                 color: #495057;
             }
+            .diagnostic-item {
+                margin-bottom: 5px;
+            }
+            .diagnostic-label {
+                font-weight: bold;
+                color: #495057;
+            }
+            .error-list {
+                max-height: 200px;
+                overflow-y: auto;
+                margin-top: 10px;
+                border: 1px solid #e9ecef;
+                padding: 10px;
+                background-color: #fff;
+            }
+            .error-item {
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .error-time {
+                color: #6c757d;
+                font-size: 12px;
+            }
+            .error-context {
+                font-weight: bold;
+                color: #212529;
+            }
+            .error-message {
+                color: #dc3545;
+            }
+            .no-data {
+                text-align: center;
+                padding: 20px;
+                color: #6c757d;
+                font-style: italic;
+            }
             @media (max-width: 768px) {
-                .tab-container {
-                    flex-wrap: wrap;
+                .tab button {
+                    padding: 10px 8px;
+                    font-size: 14px;
                 }
-                .tab {
-                    flex-grow: 1;
-                    text-align: center;
-                    padding: 10px;
+                .stock-table {
+                    font-size: 12px;
                 }
                 .stock-table th, .stock-table td {
-                    padding: 8px;
-                    font-size: 14px;
+                    padding: 6px;
                 }
             }
         </style>
     </head>
     <body>
+        <header>
+            <h1>NSE Stock Analyzer</h1>
+            <p>Technical Analysis with Supertrend and RSI</p>
+        </header>
+        
         <div class="container">
-            <div class="header">
-                <h1>NSE Stock Analyzer</h1>
-                <p>Technical Analysis with Supertrend and RSI indicators</p>
-            </div>
-            
             <div class="status-bar">
                 <div>
-                    <span>Status: </span>
-                    <span class="status-badge status-{status}">{status}</span>
+                    <strong>Last Update:</strong> {{last_update}}
+                    <span style="margin-left: 15px;"><strong>Next Update:</strong> {{next_update}}</span>
                 </div>
-                <div>Last update: {last_update}</div>
-                <div>Next update: {next_update}</div>
+                <div>
+                    <span class="status-indicator status-{{status}}">{{status|upper}}</span>
+                </div>
             </div>
             
-            <div class="filter-container">
-                <a href="/?filter=all" class="filter-btn {all_active}">All Signals</a>
-                <a href="/?filter=buy" class="filter-btn {buy_active}">Buy/Oversold</a>
-                <a href="/?filter=sell" class="filter-btn {sell_active}">Sell/Overbought</a>
+            <div class="tab">
+                <button class="tablinks active" onclick="openTab(event, 'tab-indices')">Market Indices</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-large')">Large Cap</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-mid')">Mid Cap</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-small')">Small Cap</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-weekly')">Weekly Analysis</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-monthly')">Monthly Analysis</button>
+                <button class="tablinks" onclick="openTab(event, 'tab-diagnostics')">Diagnostics</button>
             </div>
             
-            <div class="tab-container">
-                <div class="tab active" data-tab="indices">Indices</div>
-                <div class="tab" data-tab="large">Large Cap</div>
-                <div class="tab" data-tab="mid">Mid Cap</div>
-                <div class="tab" data-tab="small">Small Cap</div>
-                <div class="tab" data-tab="weekly">Weekly</div>
-                <div class="tab" data-tab="monthly">Monthly</div>
-                <div class="tab" data-tab="debug">Diagnostics</div>
+            <div id="tab-indices" class="tabcontent active">
+                <h2>Market Indices</h2>
+                {{indices_table}}
             </div>
             
-            <div id="indices" class="tab-content active">
-                {indices_content}
+            <div id="tab-large" class="tabcontent">
+                <h2>Large Cap Stocks</h2>
+                <div class="filter-bar">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                    <button class="filter-btn" data-filter="sell">Sell Signals</button>
+                </div>
+                <div class="all-content">{{large_cap_table}}</div>
+                <div class="buy-content" style="display:none;">{{large_cap_buy_table}}</div>
+                <div class="sell-content" style="display:none;">{{large_cap_sell_table}}</div>
             </div>
             
-            <div id="large" class="tab-content">
-                {large_content}
+            <div id="tab-mid" class="tabcontent">
+                <h2>Mid Cap Stocks</h2>
+                <div class="filter-bar">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                    <button class="filter-btn" data-filter="sell">Sell Signals</button>
+                </div>
+                <div class="all-content">{{mid_cap_table}}</div>
+                <div class="buy-content" style="display:none;">{{mid_cap_buy_table}}</div>
+                <div class="sell-content" style="display:none;">{{mid_cap_sell_table}}</div>
             </div>
             
-            <div id="mid" class="tab-content">
-                {mid_content}
+            <div id="tab-small" class="tabcontent">
+                <h2>Small Cap Stocks</h2>
+                <div class="filter-bar">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                    <button class="filter-btn" data-filter="sell">Sell Signals</button>
+                </div>
+                <div class="all-content">{{small_cap_table}}</div>
+                <div class="buy-content" style="display:none;">{{small_cap_buy_table}}</div>
+                <div class="sell-content" style="display:none;">{{small_cap_sell_table}}</div>
             </div>
             
-            <div id="small" class="tab-content">
-                {small_content}
+            <div id="tab-weekly" class="tabcontent">
+                <h2>Weekly Analysis</h2>
+                <div class="filter-bar">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                    <button class="filter-btn" data-filter="sell">Sell Signals</button>
+                </div>
+                <div class="all-content">{{weekly_table}}</div>
+                <div class="buy-content" style="display:none;">{{weekly_buy_table}}</div>
+                <div class="sell-content" style="display:none;">{{weekly_sell_table}}</div>
             </div>
             
-            <div id="weekly" class="tab-content">
-                {weekly_content}
+            <div id="tab-monthly" class="tabcontent">
+                <h2>Monthly Analysis</h2>
+                <div class="filter-bar">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="buy">Buy Signals</button>
+                    <button class="filter-btn" data-filter="sell">Sell Signals</button>
+                </div>
+                <div class="all-content">{{monthly_table}}</div>
+                <div class="buy-content" style="display:none;">{{monthly_buy_table}}</div>
+                <div class="sell-content" style="display:none;">{{monthly_sell_table}}</div>
             </div>
             
-            <div id="monthly" class="tab-content">
-                {monthly_content}
-            </div>
-            
-            <div id="debug" class="tab-content">
+            <div id="tab-diagnostics" class="tabcontent">
                 <h2>System Diagnostics</h2>
-                
-                <div class="debug-section">
-                    <div class="debug-title">API Status</div>
-                    <p>NSE API Status: {api_status}</p>
-                    <p>Current Time (IST): {current_time}</p>
-                    <p>Current Time (UTC): {utc_time}</p>
+                <div class="diagnostics-section">
+                    <div class="diagnostics-title">System Status</div>
+                    <div class="diagnostic-item">
+                        <span class="diagnostic-label">NSE API Status:</span> {{api_status}}
+                    </div>
+                    <div class="diagnostic-item">
+                        <span class="diagnostic-label">Current Time (IST):</span> {{current_time}}
+                    </div>
+                    <div class="diagnostic-item">
+                        <span class="diagnostic-label">Timezone Check:</span> {{timezone_check}}
+                    </div>
+                    
+                    <div class="diagnostics-title" style="margin-top: 15px;">Package Status</div>
+                    {{package_status}}
+                    
+                    <div class="diagnostics-title" style="margin-top: 15px;">Recent Errors</div>
+                    <div class="error-list">
+                        {{error_list}}
+                    </div>
                 </div>
-                
-                {error_section}
-                
-                <div class="debug-section">
-                    <div class="debug-title">Package Status</div>
-                    <ul>
-                        {package_status}
-                    </ul>
-                </div>
-            </div>
-            
-            <div class="footer">
-                <p>NSE Stock Analyzer - Technical Analysis Tool</p>
-                <p>Trading based solely on technical indicators involves risk - please do your own research.</p>
             </div>
         </div>
         
         <script>
-            // Tab switching functionality
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.addEventListener('click', () => {
-                    // Remove active class from all tabs and contents
-                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        function openTab(evt, tabName) {
+            var i, tabcontent, tablinks;
+            tabcontent = document.getElementsByClassName("tabcontent");
+            for (i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].className = tabcontent[i].className.replace(" active", "");
+            }
+            tablinks = document.getElementsByClassName("tablinks");
+            for (i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+            document.getElementById(tabName).className += " active";
+            evt.currentTarget.className += " active";
+        }
+        
+        // Filter buttons functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            var filterBtns = document.querySelectorAll('.filter-btn');
+            
+            filterBtns.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var filter = this.getAttribute('data-filter');
+                    var tabContent = this.closest('.tabcontent');
                     
-                    // Add active class to clicked tab
-                    tab.classList.add('active');
+                    // Update button active state
+                    tabContent.querySelectorAll('.filter-btn').forEach(function(filterBtn) {
+                        filterBtn.classList.remove('active');
+                    });
+                    this.classList.add('active');
                     
-                    // Show corresponding content
-                    const tabId = tab.getAttribute('data-tab');
-                    document.getElementById(tabId).classList.add('active');
+                    // Show/hide content based on filter
+                    tabContent.querySelector('.all-content').style.display = (filter === 'all') ? 'block' : 'none';
+                    tabContent.querySelector('.buy-content').style.display = (filter === 'buy') ? 'block' : 'none';
+                    tabContent.querySelector('.sell-content').style.display = (filter === 'sell') ? 'block' : 'none';
                 });
             });
+            
+            // Auto-refresh page every 5 minutes
+            setTimeout(function() {
+                location.reload();
+            }, 300000);
+        });
         </script>
     </body>
     </html>
     """
     
-    # Format current filter status
-    filter_status = {
-        'all_active': 'active' if filter_type is None or filter_type == 'all' else '',
-        'buy_active': 'active' if filter_type == 'buy' else '',
-        'sell_active': 'active' if filter_type == 'sell' else ''
-    }
+    # Get current data with lock
+    with results_lock:
+        results_copy = latest_results.copy()
+        diagnostics_copy = diagnostics.copy()
     
-    # Generate HTML content for each tab
-    indices_content = generate_html_table(latest_results["indices"], "Indices", filter_type)
-    large_content = generate_html_table(latest_results["large"], "Large Cap Stocks", filter_type)
-    mid_content = generate_html_table(latest_results["mid"], "Mid Cap Stocks", filter_type)
-    small_content = generate_html_table(latest_results["small"], "Small Cap Stocks", filter_type)
-    weekly_content = generate_html_table(latest_results["weekly"], "Weekly Analysis", filter_type)
-    monthly_content = generate_html_table(latest_results["monthly"], "Monthly Analysis", filter_type)
+    # Generate HTML tables for each category
+    indices_table = generate_html_table(results_copy.get("indices", []), "Market Indices")
     
-    # Generate error section for debug tab
-    error_section = ""
-    if diagnostics["errors"]:
-        error_section = """
-        <div class="error-info">
-            <div class="error-title">Recent Errors</div>
-            <div class="error-list">
-        """
-        for error in diagnostics["errors"]:
-            error_section += f"{error['time']} [{error['context']}]: {error['error']}\n"
-        error_section += """
+    large_cap_table = generate_html_table(results_copy.get("large", []), "Large Cap Stocks")
+    large_cap_buy_table = generate_html_table(results_copy.get("large", []), "Large Cap Stocks", "buy")
+    large_cap_sell_table = generate_html_table(results_copy.get("large", []), "Large Cap Stocks", "sell")
+    
+    mid_cap_table = generate_html_table(results_copy.get("mid", []), "Mid Cap Stocks")
+    mid_cap_buy_table = generate_html_table(results_copy.get("mid", []), "Mid Cap Stocks", "buy")
+    mid_cap_sell_table = generate_html_table(results_copy.get("mid", []), "Mid Cap Stocks", "sell")
+    
+    small_cap_table = generate_html_table(results_copy.get("small", []), "Small Cap Stocks")
+    small_cap_buy_table = generate_html_table(results_copy.get("small", []), "Small Cap Stocks", "buy")
+    small_cap_sell_table = generate_html_table(results_copy.get("small", []), "Small Cap Stocks", "sell")
+    
+    weekly_table = generate_html_table(results_copy.get("weekly", []), "Weekly Analysis")
+    weekly_buy_table = generate_html_table(results_copy.get("weekly", []), "Weekly Analysis", "buy")
+    weekly_sell_table = generate_html_table(results_copy.get("weekly", []), "Weekly Analysis", "sell")
+    
+    monthly_table = generate_html_table(results_copy.get("monthly", []), "Monthly Analysis")
+    monthly_buy_table = generate_html_table(results_copy.get("monthly", []), "Monthly Analysis", "buy")
+    monthly_sell_table = generate_html_table(results_copy.get("monthly", []), "Monthly Analysis", "sell")
+    
+    # Generate diagnostics information
+    package_status_html = "<div>"
+    for package, status in diagnostics_copy.get("package_status", {}).items():
+        status_color = "green" if "Failed" not in status else "red"
+        package_status_html += f"<div class='diagnostic-item'><span class='diagnostic-label'>{package}:</span> <span style='color:{status_color}'>{status}</span></div>"
+    package_status_html += "</div>"
+    
+    error_list_html = ""
+    if diagnostics_copy.get("errors"):
+        for error in diagnostics_copy["errors"]:
+            error_list_html += f"""
+            <div class='error-item'>
+                <div class='error-time'>{error['time']}</div>
+                <div class='error-context'>{error['context']}</div>
+                <div class='error-message'>{error['error']}</div>
             </div>
-        </div>
-        """
+            """
+    else:
+        error_list_html = "<div class='no-data'>No errors recorded</div>"
     
-    # Generate package status list
-    package_status_html = ""
-    for package, status in diagnostics["package_status"].items():
-        package_status_html += f"<li><strong>{package}:</strong> {status}</li>"
+    # Replace placeholders in the template
+    html = html_template.replace("{{indices_table}}", indices_table)
+    html = html.replace("{{large_cap_table}}", large_cap_table)
+    html = html.replace("{{large_cap_buy_table}}", large_cap_buy_table)
+    html = html.replace("{{large_cap_sell_table}}", large_cap_sell_table)
+    html = html.replace("{{mid_cap_table}}", mid_cap_table)
+    html = html.replace("{{mid_cap_buy_table}}", mid_cap_buy_table)
+    html = html.replace("{{mid_cap_sell_table}}", mid_cap_sell_table)
+    html = html.replace("{{small_cap_table}}", small_cap_table)
+    html = html.replace("{{small_cap_buy_table}}", small_cap_buy_table)
+    html = html.replace("{{small_cap_sell_table}}", small_cap_sell_table)
+    html = html.replace("{{weekly_table}}", weekly_table)
+    html = html.replace("{{weekly_buy_table}}", weekly_buy_table)
+    html = html.replace("{{weekly_sell_table}}", weekly_sell_table)
+    html = html.replace("{{monthly_table}}", monthly_table)
+    html = html.replace("{{monthly_buy_table}}", monthly_buy_table)
+    html = html.replace("{{monthly_sell_table}}", monthly_sell_table)
     
-    # Substitute all values in template
-    html = html.format(
-        status=latest_results["status"],
-        last_update=latest_results["last_update"] or "Not available",
-        next_update=latest_results["next_update"] or "Not scheduled",
-        indices_content=indices_content,
-        large_content=large_content,
-        mid_content=mid_content,
-        small_content=small_content,
-        weekly_content=weekly_content,
-        monthly_content=monthly_content,
-        api_status=diagnostics["api_status"],
-        current_time=current_time,
-        utc_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z"),
-        error_section=error_section,
-        package_status=package_status_html,
-        **filter_status
-    )
+    html = html.replace("{{last_update}}", results_copy.get("last_update", "Never"))
+    html = html.replace("{{next_update}}", results_copy.get("next_update", "Unknown"))
+    html = html.replace("{{status}}", results_copy.get("status", "idle"))
+    
+    html = html.replace("{{api_status}}", diagnostics_copy.get("api_status", "Unknown"))
+    html = html.replace("{{current_time}}", get_ist_time().strftime("%Y-%m-%d %H:%M:%S"))
+    html = html.replace("{{timezone_check}}", diagnostics_copy.get("timezone_check", {}).get("ist_time", "Unknown"))
+    html = html.replace("{{package_status}}", package_status_html)
+    html = html.replace("{{error_list}}", error_list_html)
     
     return html
 
-@app.route('/api/results')
-def api_results():
-    """API endpoint to get analysis results"""
-    # Return the latest results as JSON
+@app.route('/api/status')
+def api_status():
+    """Return status and summary as JSON"""
     with results_lock:
-        # Remove diagnostics info from API results
-        api_results = latest_results.copy()
-        api_results.pop("diagnostics", None)
-        return jsonify(api_results)
-
-@app.route('/api/refresh', methods=['POST'])
-def api_refresh():
-    """API endpoint to trigger a refresh of the analysis"""
-    # Check if analysis is already running
-    if latest_results["status"] == "running":
-        return jsonify({"success": False, "message": "Analysis is already running"})
+        results_copy = latest_results.copy()
     
-    # Start analysis in a separate thread
-    threading.Thread(target=analyzer.run_analysis).start()
+    # Create summary of signals
+    summary = {
+        "indices": {},
+        "large": {"BUY": 0, "STRONG BUY": 0, "SELL": 0, "STRONG SELL": 0, "OVERSOLD": 0, "OVERBOUGHT": 0, "NEUTRAL": 0},
+        "mid": {"BUY": 0, "STRONG BUY": 0, "SELL": 0, "STRONG SELL": 0, "OVERSOLD": 0, "OVERBOUGHT": 0, "NEUTRAL": 0},
+        "small": {"BUY": 0, "STRONG BUY": 0, "SELL": 0, "STRONG SELL": 0, "OVERSOLD": 0, "OVERBOUGHT": 0, "NEUTRAL": 0},
+        "weekly": {"BUY": 0, "STRONG BUY": 0, "SELL": 0, "STRONG SELL": 0, "OVERSOLD": 0, "OVERBOUGHT": 0, "NEUTRAL": 0},
+        "monthly": {"BUY": 0, "STRONG BUY": 0, "SELL": 0, "STRONG SELL": 0, "OVERSOLD": 0, "OVERBOUGHT": 0, "NEUTRAL": 0}
+    }
     
-    return jsonify({"success": True, "message": "Analysis refresh triggered"})
-
-@app.route('/api/diagnostics')
-def api_diagnostics():
-    """API endpoint to get system diagnostics"""
-    return jsonify(diagnostics)
-
-def run_scheduler():
-    """Run the scheduler for periodic analysis"""
-    logger.info(f"Setting up scheduler to run analysis every {ANALYSIS_INTERVAL} minutes")
+    # Count indices signals
+    for idx in results_copy.get("indices", []):
+        index_name = idx.get("Index")
+        signal = idx.get("Signal", "NEUTRAL")
+        if index_name not in summary["indices"]:
+            summary["indices"][index_name] = signal
     
-    # Function to run analysis and reschedule
-    def run_scheduled_analysis():
-        try:
-            logger.info("Running scheduled analysis...")
-            analyzer.run_analysis()
-        except Exception as e:
-            log_error("Scheduled analysis", e)
-        
-        # Reschedule the next run
-        threading.Timer(ANALYSIS_INTERVAL * 60, run_scheduled_analysis).start()
+    # Count stock signals for each category
+    for category in ["large", "mid", "small", "weekly", "monthly"]:
+        for stock in results_copy.get(category, []):
+            signal = stock.get("Signal", "NEUTRAL")
+            summary[category][signal] += 1
     
-    # Run the first analysis immediately
-    threading.Timer(1, run_scheduled_analysis).start()
+    response = {
+        "status": results_copy.get("status", "idle"),
+        "last_update": results_copy.get("last_update"),
+        "next_update": results_copy.get("next_update"),
+        "summary": summary
+    }
+    
+    return jsonify(response)
 
-# Initialize the analyzer
-analyzer = StockAnalyzer()
+@app.route('/api/data/<category>')
+def api_data(category):
+    """Return data for a specific category as JSON"""
+    if category not in ["indices", "large", "mid", "small", "weekly", "monthly"]:
+        return jsonify({"error": "Invalid category"}), 400
+    
+    with results_lock:
+        results_copy = latest_results.copy()
+    
+    return jsonify({
+        "category": category,
+        "data": results_copy.get(category, []),
+        "last_update": results_copy.get("last_update")
+    })
 
-# Check initialization status
-if __name__ == "__main__":
+@app.route('/api/signals/<signal_type>')
+def api_signals(signal_type):
+    """Return stocks with specific signal type"""
+    if signal_type not in ["buy", "sell", "strong_buy", "strong_sell", "oversold", "overbought"]:
+        return jsonify({"error": "Invalid signal type"}), 400
+    
+    with results_lock:
+        results_copy = latest_results.copy()
+    
+    # Map signal_type to actual signal values
+    signal_map = {
+        "buy": ["BUY", "STRONG BUY"],
+        "strong_buy": ["STRONG BUY"],
+        "sell": ["SELL", "STRONG SELL"],
+        "strong_sell": ["STRONG SELL"],
+        "oversold": ["OVERSOLD"],
+        "overbought": ["OVERBOUGHT"]
+    }
+    
+    signals = signal_map.get(signal_type)
+    matching_stocks = []
+    
+    # Collect matching stocks from all categories
+    for category in ["large", "mid", "small", "weekly", "monthly"]:
+        for stock in results_copy.get(category, []):
+            if stock.get("Signal") in signals:
+                stock_with_category = stock.copy()
+                stock_with_category["Category"] = category
+                matching_stocks.append(stock_with_category)
+    
+    return jsonify({
+        "signal_type": signal_type,
+        "count": len(matching_stocks),
+        "stocks": matching_stocks,
+        "last_update": results_copy.get("last_update")
+    })
+
+@app.route('/force-update')
+def force_update():
+    """Force an analysis update"""
+    # Get secret key from request (simple security)
+    secret = request.args.get('key', '')
+    if secret != os.environ.get("UPDATE_SECRET", "update123"):
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    # Start update in background thread to avoid blocking
+    update_thread = threading.Thread(target=analyzer.run_analysis)
+    update_thread.daemon = True
+    update_thread.start()
+    
+    return jsonify({
+        "status": "update_started",
+        "message": "Stock analysis update has been initiated"
+    })
+
+@app.route('/diagnostics')
+def diagnostics_page():
+    """Return diagnostics information"""
+    with results_lock:
+        diagnostics_copy = diagnostics.copy()
+    
+    return jsonify(diagnostics_copy)
+
+def setup_scheduler():
+    """Set up the schedule for recurring analysis"""
+    # Define market hours in IST
+    market_open_hour = 9  # 9:00 AM IST
+    market_close_hour = 16  # 4:00 PM IST
+    
+    # Schedule analysis during market hours on weekdays
+    def job():
+        now = get_ist_time()
+        # Check if market hours (9:00 AM to 4:00 PM IST) and weekday (0-4, Mon-Fri)
+        if (market_open_hour <= now.hour < market_close_hour) and (0 <= now.weekday() <= 4):
+            logger.info("Scheduled analysis triggered during market hours")
+            analyzer.scheduled_analysis()
+        else:
+            logger.info("Skipping scheduled analysis (outside market hours)")
+    
+    # Schedule job every ANALYSIS_INTERVAL minutes
+    schedule.every(ANALYSIS_INTERVAL).minutes.do(job)
+    logger.info(f"Scheduled analysis job every {ANALYSIS_INTERVAL} minutes")
+    
+    # Run scheduler in a separate thread
+    def run_scheduler():
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(1)
+            except Exception as e:
+                log_error("Scheduler", e)
+                time.sleep(60)  # Wait a minute before retrying
+    
+    scheduler_thread = threading.Thread(target=run_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
+    logger.info("Scheduler thread started")
+
+def main():
+    """Main function to start the application"""
     try:
+        global analyzer
+        
+        # Create analyzer
+        analyzer = StockAnalyzer()
+        
         # Run initial analysis
-        logger.info("Running initial analysis on startup")
         analyzer.run_analysis()
         
-        # Start scheduler in a separate thread
-        threading.Thread(target=run_scheduler, daemon=True).start()
+        # Setup scheduler
+        setup_scheduler()
         
-        # Run Flask app
+        # Start Flask app
         port = int(os.environ.get("PORT", 5000))
-        logger.info(f"Starting web server on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=os.environ.get("DEBUG", "False").lower() == "true")
+        debug = os.environ.get("DEBUG", "False").lower() == "true"
+        
+        logger.info(f"Starting Flask app on port {port} (Debug: {debug})")
+        app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=False)
+        
     except Exception as e:
+        log_error("Application startup", e)
         logger.critical(f"Failed to start application: {e}")
-        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
