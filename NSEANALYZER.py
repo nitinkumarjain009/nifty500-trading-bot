@@ -1275,9 +1275,10 @@ def schedule_jobs():
     # Schedule the job
     schedule.every(ANALYSIS_INTERVAL).minutes.do(job)
     
-    # Also run analysis at market open and close
-    schedule.every().monday.to.friday.at("09:20").do(analyzer.run_analysis)
-    schedule.every().monday.to.friday.at("15:35").do(analyzer.run_analysis)
+    # Also run analysis at market open and close for each weekday
+    for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']:
+        getattr(schedule.every(), day).at("09:20").do(analyzer.run_analysis)
+        getattr(schedule.every(), day).at("15:35").do(analyzer.run_analysis)
     
     logger.info(f"Scheduled analysis to run every {ANALYSIS_INTERVAL} minutes during market hours")
     
