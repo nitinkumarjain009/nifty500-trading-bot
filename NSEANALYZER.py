@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 import threading
 import logging
+import concurrent.futures
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(
@@ -94,6 +96,11 @@ NIFTY_LARGE_CAP_URL = "https://archives.nseindia.com/content/indices/ind_nifty10
 NIFTY_MID_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv"
 NIFTY_SMALL_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
 
+# Performance settings
+MAX_WORKERS = os.environ.get("MAX_WORKERS", 10)  # Number of parallel workers
+BATCH_SIZE = 10  # Process stocks in batches to avoid rate limiting
+CACHE_TIMEOUT = 300  # Cache timeout in seconds
+
 # Global variable to store latest results
 latest_results = {
     "large": [],
@@ -112,6 +119,8 @@ class StockAnalyzer:
             self.nse = None
         
         self.bot = self.setup_telegram_bot()
+        self.data_cache = {}
+        self.last_cache_time = {}
     
     def setup_telegram_bot(self):
         try:
@@ -122,6 +131,7 @@ class StockAnalyzer:
             logger.error(f"Error setting up Telegram bot: {e}")
             return None
     
+    @lru_cache(maxsize=300)  # Cache up to 300 stock lists
     def fetch_stock_list(self, category="large"):
         try:
             if category.lower() == "large":
@@ -148,6 +158,12 @@ class StockAnalyzer:
                 return ["AHLUCONT", "AJOONI", "AKSHARCHEM", "ASTEC", "AXITA"]
     
     def get_stock_data(self, symbol, days=100):
+        current_time = time.time()
+        
+        # Check if we have a cached version
+        if symbol in self.data_cache and current_time - self.last_cache_time.get(symbol, 0) < CACHE_TIMEOUT:
+            return self.data_cache[symbol]
+        
         try:
             end_date = datetime.now().date()
             start_date = end_date - pd.Timedelta(days=days)
@@ -159,12 +175,15 @@ class StockAnalyzer:
                     data = get_history(symbol=symbol, start=start_date, end=end_date)
                     if not data.empty:
                         logger.info(f"Successfully fetched data for {symbol}")
+                        # Cache the result
+                        self.data_cache[symbol] = data
+                        self.last_cache_time[symbol] = current_time
                         return data
                     else:
                         logger.warning(f"Empty data returned for {symbol}, attempt {attempt+1}/{retries}")
                 except Exception as inner_e:
                     logger.warning(f"Attempt {attempt+1}/{retries} failed for {symbol}: {inner_e}")
-                    time.sleep(2)  # Wait before retry
+                    time.sleep(1)  # Reduced wait time before retry
             
             logger.error(f"Failed to fetch data for {symbol} after {retries} attempts")
             return pd.DataFrame()
@@ -173,6 +192,7 @@ class StockAnalyzer:
             return pd.DataFrame()
     
     def calculate_atr(self, high, low, close, period=14):
+        """Vectorized ATR calculation for better performance"""
         try:
             tr1 = high - low
             tr2 = abs(high - close.shift())
@@ -185,6 +205,7 @@ class StockAnalyzer:
             return pd.Series(0, index=high.index)
     
     def calculate_supertrend(self, df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
+        """Optimized Supertrend calculation"""
         try:
             high = df['High']
             low = df['Low']
@@ -198,35 +219,44 @@ class StockAnalyzer:
             basic_upperband = hl2 + (multiplier * atr)
             basic_lowerband = hl2 - (multiplier * atr)
             
-            # Initialize final upper and lower bands
-            final_upperband = basic_upperband.copy()
-            final_lowerband = basic_lowerband.copy()
+            # Initialize arrays
+            final_upperband = np.zeros(len(df))
+            final_lowerband = np.zeros(len(df))
+            supertrend = np.zeros(len(df))
             
-            # Initialize Supertrend
-            supertrend = pd.Series(0, index=df.index)
+            # Set initial values
+            for i in range(0, period):
+                final_upperband[i] = basic_upperband.iloc[i]
+                final_lowerband[i] = basic_lowerband.iloc[i]
+                supertrend[i] = basic_upperband.iloc[i]
             
-            # Calculate final upper and lower bands and supertrend
+            # Calculate Supertrend with optimized loop
             for i in range(period, len(df)):
-                if close[i] > final_upperband[i-1]:
-                    final_upperband[i] = basic_upperband[i]
+                # Upper band
+                if close.iloc[i-1] <= final_upperband[i-1]:
+                    final_upperband[i] = min(basic_upperband.iloc[i], final_upperband[i-1])
                 else:
-                    final_upperband[i] = min(final_upperband[i-1], basic_upperband[i])
-                    
-                if close[i] < final_lowerband[i-1]:
-                    final_lowerband[i] = basic_lowerband[i]
-                else:
-                    final_lowerband[i] = max(final_lowerband[i-1], basic_lowerband[i])
+                    final_upperband[i] = basic_upperband.iloc[i]
                 
-                if close[i] <= final_upperband[i]:
+                # Lower band
+                if close.iloc[i-1] >= final_lowerband[i-1]:
+                    final_lowerband[i] = max(basic_lowerband.iloc[i], final_lowerband[i-1])
+                else:
+                    final_lowerband[i] = basic_lowerband.iloc[i]
+                
+                # Supertrend
+                if close.iloc[i] <= final_upperband[i]:
                     supertrend[i] = final_upperband[i]
                 else:
                     supertrend[i] = final_lowerband[i]
             
+            # Convert back to pandas series
+            df['Supertrend'] = pd.Series(supertrend, index=df.index)
+            
             # Determine trend (1 for uptrend, -1 for downtrend)
-            df['Supertrend'] = supertrend
             df['Supertrend_Direction'] = 0
-            df.loc[close > supertrend, 'Supertrend_Direction'] = 1
-            df.loc[close <= supertrend, 'Supertrend_Direction'] = -1
+            df.loc[close > df['Supertrend'], 'Supertrend_Direction'] = 1
+            df.loc[close <= df['Supertrend'], 'Supertrend_Direction'] = -1
             
             return df
         except Exception as e:
@@ -236,20 +266,24 @@ class StockAnalyzer:
             return df
     
     def calculate_rsi(self, df, period=RSI_PERIOD):
+        """Optimized RSI calculation"""
         try:
             close = df['Close']
             delta = close.diff()
             
             # Make two series: one for gains and one for losses
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
+            gain = delta.copy()
+            loss = delta.copy()
+            gain[gain < 0] = 0
+            loss[loss > 0] = 0
+            loss = abs(loss)
             
             # Calculate average gain and average loss
             avg_gain = gain.rolling(window=period).mean()
             avg_loss = loss.rolling(window=period).mean()
             
             # Calculate RS (Relative Strength)
-            rs = avg_gain / avg_loss
+            rs = avg_gain / avg_loss.replace(0, 0.00001)  # Avoid division by zero
             
             # Calculate RSI
             rsi = 100 - (100 / (1 + rs))
@@ -312,29 +346,46 @@ class StockAnalyzer:
                 'Signal': signal
             }
             
-            logger.info(f"Analysis for {symbol}: {signal}")
             return result
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
             return None
     
-    def analyze_category(self, category):
-        stocks = self.fetch_stock_list(category)
+    def analyze_batch(self, symbols):
+        """Analyze a batch of symbols"""
         results = []
-        
-        logger.info(f"Analyzing {len(stocks)} stocks from {category} cap category")
-        
-        # For demo/testing purposes, limit to 5 stocks per category
-        stocks = stocks[:5]
-        logger.info(f"Limited to 5 stocks for testing: {stocks}")
-        
-        for symbol in stocks:
+        for symbol in symbols:
             try:
                 result = self.analyze_stock(symbol)
                 if result:
                     results.append(result)
             except Exception as e:
-                logger.error(f"Error analyzing {symbol} in category {category}: {e}")
+                logger.error(f"Error analyzing {symbol}: {e}")
+        return results
+    
+    def analyze_category(self, category):
+        """Analyze a category using parallel processing"""
+        stocks = self.fetch_stock_list(category)
+        results = []
+        
+        logger.info(f"Analyzing {len(stocks)} stocks from {category} cap category")
+        
+        # Remove testing limit to process all stocks
+        # stocks = stocks[:5]  # This line is commented out
+        
+        # Process in batches with parallel execution
+        with concurrent.futures.ThreadPoolExecutor(max_workers=int(MAX_WORKERS)) as executor:
+            futures = []
+            # Create batches to avoid overwhelming the API
+            for i in range(0, len(stocks), BATCH_SIZE):
+                batch = stocks[i:i+BATCH_SIZE]
+                futures.append(executor.submit(self.analyze_batch, batch))
+            
+            # Collect results
+            for future in concurrent.futures.as_completed(futures):
+                batch_results = future.result()
+                if batch_results:
+                    results.extend(batch_results)
         
         logger.info(f"Completed analysis for {category} cap with {len(results)} results")
         return results
@@ -404,17 +455,21 @@ class StockAnalyzer:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info("Starting market analysis at " + current_time)
             
-            # For demonstration purposes, we'll always run the analysis
             # Analyze each category
             categories = ["large", "mid", "small"]
             all_results = {}
             
-            for category in categories:
-                results = self.analyze_category(category)
-                all_results[category] = results
-                
-                # Update global results dictionary
-                latest_results[category] = results
+            # Use ThreadPoolExecutor to analyze categories in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(categories)) as executor:
+                futures = {executor.submit(self.analyze_category, category): category for category in categories}
+                for future in concurrent.futures.as_completed(futures):
+                    category = futures[future]
+                    try:
+                        results = future.result()
+                        all_results[category] = results
+                        latest_results[category] = results
+                    except Exception as e:
+                        logger.error(f"Error analyzing {category} category: {e}")
             
             latest_results["last_update"] = current_time
             
@@ -457,6 +512,8 @@ def index():
                          border-radius: 5px;}
                 .status {margin: 20px 0; padding: 15px; background-color: #f0f0f0; 
                         border-radius: 5px;}
+                .performance {margin: 20px 0; background-color: #e8f5e9; padding: 15px;
+                             border-radius: 5px;}
             </style>
         </head>
         <body>
@@ -465,6 +522,10 @@ def index():
                 <div class="status">
                     <p><strong>Status:</strong> Running</p>
                     <p><strong>Last Update:</strong> """ + last_update_value + """</p>
+                </div>
+                <div class="performance">
+                    <p><strong>Performance:</strong> Optimized for speed with parallel processing</p>
+                    <p><strong>Workers:</strong> """ + str(MAX_WORKERS) + """</p>
                 </div>
                 <div class="links">
                     <a href="/api/analyze">Run Analysis Now</a>
@@ -482,9 +543,13 @@ def index():
 
 @app.route('/api/analyze')
 def trigger_analysis():
-    analyzer = StockAnalyzer()
-    analyzer.run_analysis()
-    return jsonify({"status": "Analysis triggered", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    # Run analysis in a separate thread to avoid blocking the response
+    threading.Thread(target=lambda: StockAnalyzer().run_analysis()).start()
+    return jsonify({
+        "status": "Analysis triggered", 
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "message": "Analysis is running in background. Check results in a few minutes."
+    })
 
 @app.route('/api/results')
 def get_results():
@@ -493,6 +558,15 @@ def get_results():
 @app.route('/health')
 def health_check():
     return jsonify({"status": "healthy"})
+
+# Environment configuration endpoint
+@app.route('/api/config')
+def get_config():
+    return jsonify({
+        "MAX_WORKERS": MAX_WORKERS,
+        "BATCH_SIZE": BATCH_SIZE,
+        "CACHE_TIMEOUT": CACHE_TIMEOUT
+    })
 
 # Background thread for scheduled tasks
 def run_scheduler():
