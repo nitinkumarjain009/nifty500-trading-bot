@@ -523,7 +523,7 @@ class StockAnalyzer:
             log_error("ATR calculation", e)
             return pd.Series(0, index=high.index)
     
-    def calculate_supertrend(self, df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
+def calculate_supertrend(self, df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
     """Fixed Supertrend calculation"""
     try:
         if df.empty or len(df) < period:
