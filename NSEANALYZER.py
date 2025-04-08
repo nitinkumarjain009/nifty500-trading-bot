@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# NSE Stock Analyzer with Supertrend, RSI, Telegram Notifications and Web Service
+# NSE Stock Analyzer with Supertrend, RSI, Telegram Notifications and Web Services
 # Enhanced with Weekly/Monthly Analysis, HTML Tables and Debug Information
 
 import os
