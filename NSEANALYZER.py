@@ -524,75 +524,82 @@ class StockAnalyzer:
             return pd.Series(0, index=high.index)
     
     def calculate_supertrend(self, df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
-        """Fixed Supertrend calculation"""
-        try:
-            if df.empty or len(df) < period:
-                logger.warning("DataFrame is empty or has insufficient data for Supertrend calculation")
-                df['Supertrend'] = 0
-                df['Supertrend_Direction'] = 0
-                return df
-                
-            high = df['High']
-            low = df['Low']
-            close = df['Close']
-            
-            # Calculate ATR
-            atr = self.calculate_atr(high, low, close, period)
-            
-            # Calculate basic upper and lower bands
-            hl2 = (high + low) / 2
-            basic_upperband = hl2 + (multiplier * atr)
-            basic_lowerband = hl2 - (multiplier * atr)
-            
-            # Initialize final bands and supertrend series
-            final_upperband = pd.Series(index=df.index)
-            final_lowerband = pd.Series(index=df.index)
-            supertrend = pd.Series(index=df.index)
-            
-            # Initialize first values
-            for i in range(period):
-                final_upperband.iloc[i] = basic_upperband.iloc[i]
-                final_lowerband.iloc[i] = basic_lowerband.iloc[i]
-                supertrend.iloc[i] = basic_upperband.iloc[i]
-            
-            # Calculate rest of the values iteratively
-            for i in range(period, len(df)):
-                # Upper band
-                if basic_upperband.iloc[i] < final_upperband.iloc[i-1] or close.iloc[i-1] > final_upperband.iloc[i-1]:
-                    final_upperband.iloc[i] = basic_upperband.iloc[i]
-                else:
-                    final_upperband.iloc[i] = final_upperband.iloc[i-1]
-                
-                # Lower band
-                if basic_lowerband.iloc[i] > final_lowerband.iloc[i-1] or close.iloc[i-1] < final_lowerband.iloc[i-1]:
-                    final_lowerband.iloc[i] = basic_lowerband.iloc[i]
-                else:
-                    final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
-                
-                # Supertrend value
-                if supertrend.iloc[i-1] == final_upperband.iloc[i-1] and close.iloc[i] <= final_upperband.iloc[i]:
-                    supertrend.iloc[i] = final_upperband.iloc[i]
-                elif supertrend.iloc[i-1] == final_upperband.iloc[i-1] and close.iloc[i] > final_upperband.iloc[i]:
-                    supertrend.iloc[i] = final_lowerband.iloc[i]
-                elif supertrend.iloc[i-1] == final_lowerband.iloc[i-1] and close.iloc[i] >= final_lowerband.iloc[i]:
-                    supertrend.iloc[i] = final_lowerband.iloc[i]
-                elif supertrend.iloc[i-1] == final_lowerband.iloc[i-1] and close.iloc[i] < final_lowerband.iloc[i]:
-                    supertrend.iloc[i] = final_upperband.iloc[i]
-                else:
-                    supertrend.iloc[i] = final_lowerband.iloc[i] if close.iloc[i] > supertrend.iloc[i-1] else final_upperband.iloc[i]
-            
-            # Add supertrend to dataframe
-            df['Supertrend'] = supertrend
-            
-            # Calculate trend direction (1 for uptrend, -1 for downtrend)
-            df['Supertrend_Direction'] = np.where(close > supertrend, 1, -1)
-            
-            return df
-        except Exception as e:
-            log_error("Supertrend calculation", e)
+    """Fixed Supertrend calculation"""
+    try:
+        if df.empty or len(df) < period:
+            logger.warning("DataFrame is empty or has insufficient data for Supertrend calculation")
             df['Supertrend'] = 0
             df['Supertrend_Direction'] = 0
             return df
+            
+        # Make a copy to avoid modifying the original DataFrame
+        df = df.copy()
+        
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+        
+        # Calculate ATR
+        atr = self.calculate_atr(high, low, close, period)
+        
+        # Calculate basic upper and lower bands
+        hl2 = (high + low) / 2
+        basic_upperband = hl2 + (multiplier * atr)
+        basic_lowerband = hl2 - (multiplier * atr)
+        
+        # Initialize Series with NaN values
+        final_upperband = pd.Series(index=df.index, dtype=float)
+        final_lowerband = pd.Series(index=df.index, dtype=float)
+        supertrend = pd.Series(index=df.index, dtype=float)
+        
+        # Fill initial values
+        for i in range(period):
+            final_upperband.iloc[i] = basic_upperband.iloc[i]
+            final_lowerband.iloc[i] = basic_lowerband.iloc[i]
+            supertrend.iloc[i] = basic_upperband.iloc[i]  # Default to upper band for initial values
+        
+        # Calculate the rest of the values iteratively
+        for i in range(period, len(df)):
+            # Upper band
+            if basic_upperband.iloc[i] < final_upperband.iloc[i-1] or close.iloc[i-1] > final_upperband.iloc[i-1]:
+                final_upperband.iloc[i] = basic_upperband.iloc[i]
+            else:
+                final_upperband.iloc[i] = final_upperband.iloc[i-1]
+            
+            # Lower band
+            if basic_lowerband.iloc[i] > final_lowerband.iloc[i-1] or close.iloc[i-1] < final_lowerband.iloc[i-1]:
+                final_lowerband.iloc[i] = basic_lowerband.iloc[i]
+            else:
+                final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
+            
+            # Supertrend value - simplified logic
+            if supertrend.iloc[i-1] == final_upperband.iloc[i-1]:
+                if close.iloc[i] <= final_upperband.iloc[i]:
+                    supertrend.iloc[i] = final_upperband.iloc[i]
+                else:
+                    supertrend.iloc[i] = final_lowerband.iloc[i]
+            elif supertrend.iloc[i-1] == final_lowerband.iloc[i-1]:
+                if close.iloc[i] >= final_lowerband.iloc[i]:
+                    supertrend.iloc[i] = final_lowerband.iloc[i]
+                else:
+                    supertrend.iloc[i] = final_upperband.iloc[i]
+            else:
+                # Fallback logic (should rarely happen with proper initialization)
+                supertrend.iloc[i] = final_lowerband.iloc[i] if close.iloc[i] > supertrend.iloc[i-1] else final_upperband.iloc[i]
+        
+        # Add Supertrend to DataFrame
+        df['Supertrend'] = supertrend
+        
+        # Calculate trend direction (1 for uptrend, -1 for downtrend)
+        df['Supertrend_Direction'] = np.where(close > supertrend, 1, -1)
+        
+        return df
+        
+    except Exception as e:
+        log_error("Supertrend calculation", e)
+        df['Supertrend'] = 0
+        df['Supertrend_Direction'] = 0
+        return df
     
     def calculate_rsi(self, df, period=RSI_PERIOD):
         """Fixed RSI calculation"""
