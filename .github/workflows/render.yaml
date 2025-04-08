@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: nse-stock-analyzer
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: TZ
+        value: Asia/Kolkata
+    plan: free
