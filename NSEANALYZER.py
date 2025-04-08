@@ -97,17 +97,23 @@ NIFTY_MID_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftymidc
 NIFTY_SMALL_CAP_URL = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
 
 # Performance settings
-MAX_WORKERS = os.environ.get("MAX_WORKERS", 10)  # Number of parallel workers
-BATCH_SIZE = 10  # Process stocks in batches to avoid rate limiting
-CACHE_TIMEOUT = 300  # Cache timeout in seconds
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))  # Number of parallel workers
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 10))  # Process stocks in batches to avoid rate limiting
+CACHE_TIMEOUT = int(os.environ.get("CACHE_TIMEOUT", 300))  # Cache timeout in seconds
+ANALYSIS_INTERVAL = int(os.environ.get("ANALYSIS_INTERVAL", 15))  # Minutes between analyses
 
 # Global variable to store latest results
 latest_results = {
     "large": [],
     "mid": [],
     "small": [],
-    "last_update": None
+    "last_update": None,
+    "next_update": None,
+    "status": "idle"
 }
+
+# Global lock for accessing latest_results
+results_lock = threading.Lock()
 
 class StockAnalyzer:
     def __init__(self):
@@ -370,11 +376,8 @@ class StockAnalyzer:
         
         logger.info(f"Analyzing {len(stocks)} stocks from {category} cap category")
         
-        # Remove testing limit to process all stocks
-        # stocks = stocks[:5]  # This line is commented out
-        
         # Process in batches with parallel execution
-        with concurrent.futures.ThreadPoolExecutor(max_workers=int(MAX_WORKERS)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             # Create batches to avoid overwhelming the API
             for i in range(0, len(stocks), BATCH_SIZE):
@@ -452,8 +455,15 @@ class StockAnalyzer:
         global latest_results  # Proper declaration of using the global variable
         
         try:
+            with results_lock:
+                latest_results["status"] = "running"
+            
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info("Starting market analysis at " + current_time)
+            
+            # Calculate next update time
+            next_update_time = datetime.now() + pd.Timedelta(minutes=ANALYSIS_INTERVAL)
+            next_update = next_update_time.strftime("%Y-%m-%d %H:%M:%S")
             
             # Analyze each category
             categories = ["large", "mid", "small"]
@@ -467,16 +477,24 @@ class StockAnalyzer:
                     try:
                         results = future.result()
                         all_results[category] = results
-                        latest_results[category] = results
+                        
+                        # Update global results dictionary with thread safety
+                        with results_lock:
+                            latest_results[category] = results
                     except Exception as e:
                         logger.error(f"Error analyzing {category} category: {e}")
             
-            latest_results["last_update"] = current_time
+            # Update status
+            with results_lock:
+                latest_results["last_update"] = current_time
+                latest_results["next_update"] = next_update
+                latest_results["status"] = "idle"
             
             # Format and send reports
             for category, results in all_results.items():
                 message = f"📊 *NSE {category.upper()} CAP ANALYSIS* 📊\n"
-                message += f"*Date & Time:* {current_time}\n\n"
+                message += f"*Date & Time:* {current_time}\n"
+                message += f"*Next Update:* {next_update}\n\n"
                 message += self.format_results_table(results)
                 
                 self.send_telegram_message(message)
@@ -491,41 +509,70 @@ class StockAnalyzer:
             return all_results
         except Exception as e:
             logger.error(f"Error during analysis: {e}")
+            with results_lock:
+                latest_results["status"] = "error"
             return None
+
+def is_market_hours():
+    """Check if current time is during market hours (9:15 AM to 3:30 PM, weekdays)"""
+    now = datetime.now()
+    # Check if it's a weekday (0 is Monday, 6 is Sunday)
+    if now.weekday() > 4:  # Saturday or Sunday
+        return False
+    
+    # Check if it's between 9:15 AM and 3:30 PM
+    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    return market_open <= now <= market_close
 
 # Flask routes
 @app.route('/')
 def index():
-    last_update_value = latest_results.get("last_update") or "Not yet run"
+    with results_lock:
+        last_update_value = latest_results.get("last_update") or "Not yet run"
+        next_update_value = latest_results.get("next_update") or "Scheduled soon"
+        status = latest_results.get("status") or "idle"
     
-    return """
+    market_status = "OPEN" if is_market_hours() else "CLOSED"
+    
+    return f"""
     <html>
         <head>
             <title>NSE Stock Analyzer</title>
             <style>
-                body {font-family: Arial, sans-serif; margin: 20px;}
-                h1 {color: #333;}
-                .container {max-width: 800px; margin: 0 auto;}
-                .links {margin: 20px 0;}
-                .links a {display: inline-block; margin-right: 15px; padding: 10px; 
+                body {{font-family: Arial, sans-serif; margin: 20px;}}
+                h1 {{color: #333;}}
+                .container {{max-width: 800px; margin: 0 auto;}}
+                .links {{margin: 20px 0;}}
+                .links a {{display: inline-block; margin-right: 15px; padding: 10px; 
                          background-color: #0066cc; color: white; text-decoration: none; 
-                         border-radius: 5px;}
-                .status {margin: 20px 0; padding: 15px; background-color: #f0f0f0; 
-                        border-radius: 5px;}
-                .performance {margin: 20px 0; background-color: #e8f5e9; padding: 15px;
-                             border-radius: 5px;}
+                         border-radius: 5px;}}
+                .status {{margin: 20px 0; padding: 15px; background-color: #f0f0f0; 
+                        border-radius: 5px;}}
+                .market-open {{color: green; font-weight: bold;}}
+                .market-closed {{color: red; font-weight: bold;}}
+                .performance {{margin: 20px 0; background-color: #e8f5e9; padding: 15px;
+                             border-radius: 5px;}}
+                .running {{color: blue; font-weight: bold;}}
+                .idle {{color: green; font-weight: bold;}}
+                .error {{color: red; font-weight: bold;}}
             </style>
+            <meta http-equiv="refresh" content="60">
         </head>
         <body>
             <div class="container">
                 <h1>NSE Stock Analyzer</h1>
                 <div class="status">
-                    <p><strong>Status:</strong> Running</p>
-                    <p><strong>Last Update:</strong> """ + last_update_value + """</p>
+                    <p><strong>Status:</strong> <span class="{status}">{status.upper()}</span></p>
+                    <p><strong>Market:</strong> <span class="market-{market_status.lower()}">{market_status}</span></p>
+                    <p><strong>Last Update:</strong> {last_update_value}</p>
+                    <p><strong>Next Update:</strong> {next_update_value}</p>
                 </div>
                 <div class="performance">
                     <p><strong>Performance:</strong> Optimized for speed with parallel processing</p>
-                    <p><strong>Workers:</strong> """ + str(MAX_WORKERS) + """</p>
+                    <p><strong>Workers:</strong> {MAX_WORKERS}</p>
+                    <p><strong>Analysis Interval:</strong> Every {ANALYSIS_INTERVAL} minutes during market hours</p>
                 </div>
                 <div class="links">
                     <a href="/api/analyze">Run Analysis Now</a>
@@ -534,7 +581,7 @@ def index():
                 <div>
                     <h2>About</h2>
                     <p>This service analyzes NSE stocks using Supertrend and RSI indicators, 
-                    identifies potential buy/sell opportunities, and sends alerts to Telegram.</p>
+                    identifies potential buy/sell opportunities, and sends alerts to Telegram every {ANALYSIS_INTERVAL} minutes.</p>
                 </div>
             </div>
         </body>
@@ -553,7 +600,9 @@ def trigger_analysis():
 
 @app.route('/api/results')
 def get_results():
-    return jsonify(latest_results)
+    with results_lock:
+        result_copy = dict(latest_results)
+    return jsonify(result_copy)
 
 @app.route('/health')
 def health_check():
@@ -565,7 +614,8 @@ def get_config():
     return jsonify({
         "MAX_WORKERS": MAX_WORKERS,
         "BATCH_SIZE": BATCH_SIZE,
-        "CACHE_TIMEOUT": CACHE_TIMEOUT
+        "CACHE_TIMEOUT": CACHE_TIMEOUT,
+        "ANALYSIS_INTERVAL": ANALYSIS_INTERVAL
     })
 
 # Background thread for scheduled tasks
@@ -573,25 +623,34 @@ def run_scheduler():
     analyzer = StockAnalyzer()
     
     # Run once at startup
-    analyzer.run_analysis()
+    if is_market_hours():
+        analyzer.run_analysis()
     
-    # Schedule runs - every 30 minutes during market hours
+    # Schedule runs - every 15 minutes during market hours (9:15 AM to 3:30 PM on weekdays)
     for hour in range(9, 16):
-        for minute in [0, 30]:
-            if (hour == 9 and minute < 30) or (hour == 15 and minute > 15):
+        for minute in [0, 15, 30, 45]:
+            # Skip times outside market hours (before 9:15 AM and after 3:30 PM)
+            if (hour == 9 and minute < 15) or (hour == 15 and minute > 30):
                 continue
-            schedule.every().monday.at(f"{hour:02}:{minute:02}").do(analyzer.run_analysis)
-            schedule.every().tuesday.at(f"{hour:02}:{minute:02}").do(analyzer.run_analysis)
-            schedule.every().wednesday.at(f"{hour:02}:{minute:02}").do(analyzer.run_analysis)
-            schedule.every().thursday.at(f"{hour:02}:{minute:02}").do(analyzer.run_analysis)
-            schedule.every().friday.at(f"{hour:02}:{minute:02}").do(analyzer.run_analysis)
+                
+            # Schedule for each weekday
+            schedule.every().monday.at(f"{hour:02d}:{minute:02d}").do(
+                lambda: is_market_hours() and analyzer.run_analysis())
+            schedule.every().tuesday.at(f"{hour:02d}:{minute:02d}").do(
+                lambda: is_market_hours() and analyzer.run_analysis())
+            schedule.every().wednesday.at(f"{hour:02d}:{minute:02d}").do(
+                lambda: is_market_hours() and analyzer.run_analysis())
+            schedule.every().thursday.at(f"{hour:02d}:{minute:02d}").do(
+                lambda: is_market_hours() and analyzer.run_analysis())
+            schedule.every().friday.at(f"{hour:02d}:{minute:02d}").do(
+                lambda: is_market_hours() and analyzer.run_analysis())
     
-    logger.info("Scheduler has been set up. The script will run during market hours.")
+    logger.info(f"Scheduler has been set up. The script will run every {ANALYSIS_INTERVAL} minutes during market hours.")
     
     # Keep the scheduler running
     while True:
         schedule.run_pending()
-        time.sleep(60)
+        time.sleep(10)  # Check more frequently
 
 def main():
     try:
