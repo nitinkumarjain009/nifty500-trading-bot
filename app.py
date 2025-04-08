@@ -2,7 +2,7 @@
 import os
 import pandas as pd
 import numpy as np
-from numpy import nan as NaN
+from numpy import nan as npNaN
 import yfinance as yf
 import pytz
 import datetime
